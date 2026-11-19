@@ -1,9 +1,7 @@
-"""Application settings and visual theme."""
+"""Static configuration: belts, timer durations and the visual theme."""
 
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_FILE = PROJECT_ROOT / "hajime_tasks.json"
 BELT_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "belts"
 
 # (display name, fallback fill, fallback edge)
@@ -17,13 +15,24 @@ BELTS = (
     ("Black", "#292C31", "#17191C"),
 )
 
+WORK_SECONDS = 25 * 60
+BREAK_SECONDS = 5 * 60
+SAVE_INTERVAL_SECONDS = 15
+
+# Theme
 BG = "#F5F4F0"
 PANEL = "#FFFFFF"
 INK = "#242522"
+INK_HOVER = "#41433E"
 MUTED = "#898982"
+FAINT = "#A3A29B"
 LINE = "#E9E8E2"
+TRACK = "#EEEDE8"
 ACCENT = "#D96C4E"
-FONT = "Segoe UI"
-
-WORK_SECONDS = 25 * 60
-BREAK_SECONDS = 5 * 60
+ACCENT_BREAK = "#6B9A70"
+HOVER_ROW = "#FAF9F6"
+ACTIVE_BG = "#FAE9E3"
+ACCENT_HOVER = "#C45B3E"
+MAX_BOARD_NAME = 24
+MAX_TASK_TITLE = 200
+FONT_CANDIDATES = ("Segoe UI", "SF Pro Text", "Helvetica Neue", "Ubuntu", "DejaVu Sans")

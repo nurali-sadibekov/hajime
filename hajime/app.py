@@ -1,353 +1,505 @@
-"""Hajime: a persistent to-do list with Judo belts and a Pomodoro timer."""
+"""CustomTkinter user interface for Hajime (fixed 4:3 window, boards sidebar)."""
 
 from __future__ import annotations
 
+import logging
+import sys
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import font as tkfont
+from tkinter import messagebox
 
+import customtkinter as ctk
+
+from . import storage
 from .belt_art import BeltIllustrations
 from .config import (
-    ACCENT, BG, BELTS, BREAK_SECONDS, DATA_FILE, FONT, INK, LINE, MUTED, PANEL,
+    ACCENT,
+    ACCENT_BREAK,
+    ACCENT_HOVER,
+    ACTIVE_BG,
+    BELTS,
+    BG,
+    BREAK_SECONDS,
+    FAINT,
+    FONT_CANDIDATES,
+    HOVER_ROW,
+    INK,
+    INK_HOVER,
+    LINE,
+    MAX_TASK_TITLE,
+    MUTED,
+    PANEL,
+    SAVE_INTERVAL_SECONDS,
+    TRACK,
     WORK_SECONDS,
 )
-from .storage import load_data, save_data
+from .models import BREAK, WORK, Board, Pomodoro, Task, belt_rank, completion
+
+WINDOW_SIZE = (640, 480)  # 4:3
+SIDEBAR_WIDTH = 196
+TASK_WRAP = 280
+LOG = logging.getLogger("hajime")
+DRAG_THRESHOLD_PX = 6
+MODE_LABELS = {WORK: "Work", BREAK: "Break"}
+NEW_BOARD = -1  # sentinel for "the new-board name field is open"
 
 
-class HajimeApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Hajime — steady progress")
-        self.geometry("760x920")
-        self.minsize(560, 720)
-        self.configure(bg=BG)
-        self.tasks, self.study = load_data(DATA_FILE)
-        self.timer_mode = "Work"
-        self.remaining = WORK_SECONDS
-        self.timer_running = False
-        self.last_tick = None
-        self.timer_job = None
-        self.editing_index = None
-        self.drag_start_index = None
-        self.belt_art = None
-        self._configure_fonts()
+def _pick_font_family(root: tk.Misc) -> str:
+    available = set(tkfont.families(root))
+    return next((f for f in FONT_CANDIDATES if f in available),
+                tkfont.nametofont("TkDefaultFont").actual("family"))
+
+
+def _card(master: tk.Misc, **pack) -> ctk.CTkFrame:
+    card = ctk.CTkFrame(master, fg_color=PANEL, corner_radius=14,
+                        border_width=1, border_color=LINE)
+    card.pack(**pack)
+    return card
+
+
+class HajimeApp(ctk.CTk):
+    def __init__(self, data_path: Path | None = None) -> None:
+        ctk.set_appearance_mode("light")
+        super().__init__(fg_color=BG)
+        if data_path is None:
+            data_path = storage.default_data_path()
+            storage.migrate_legacy(
+                data_path, Path(__file__).resolve().parent.parent / "hajime_tasks.json"
+            )
+        self.data_path = data_path
+        self.data = storage.load(self.data_path)
+        self.timer = Pomodoro(WORK_SECONDS, BREAK_SECONDS)
+        self._timer_job: str | None = None
+        self._last_save = time.monotonic()
+        self._editing: int | None = None  # task being edited
+        self._board_edit: int | None = None  # board index being renamed, or NEW_BOARD
+        self._drag_index: int | None = None
+        self._drag_origin_y = 0
+        self._drag_moved = False
+        self._drag_bindings: tuple[str, str] = ("", "")
+        self._rows: list[ctk.CTkFrame] = []
+        self._board_buttons: list[tuple[int, ctk.CTkButton]] = []
+
+        self.title("Hajime")
+        self.geometry(f"{WINDOW_SIZE[0]}x{WINDOW_SIZE[1]}")
+        self.resizable(False, False)
+        family = _pick_font_family(self)
+        self.fonts = {
+            "brand": ctk.CTkFont(family, 18, "bold"),
+            "title": ctk.CTkFont(family, 22, "bold"),
+            "body": ctk.CTkFont(family, 13),
+            "done": ctk.CTkFont(family, 13, overstrike=True),
+            "small": ctk.CTkFont(family, 11),
+            "clock": ctk.CTkFont(family, 28, "bold"),
+            "button": ctk.CTkFont(family, 12, "bold"),
+            "icon": ctk.CTkFont(family, 17),
+        }
+        self.board_menu = tk.Menu(self, tearoff=0)
         self._build()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.refresh_boards()
         self.refresh()
         self._draw_timer()
 
-    def _configure_fonts(self):
-        self.option_add("*Font", (FONT, 10))
-        self.font_title = tkfont.Font(family=FONT, size=25, weight="bold")
-        self.font_heading = tkfont.Font(family=FONT, size=14, weight="bold")
-        self.font_body = tkfont.Font(family=FONT, size=11)
-        self.font_small = tkfont.Font(family=FONT, size=9)
+    @property
+    def tasks(self) -> list[Task]:
+        return self.data.board.tasks
 
-    def _build(self):
-        outer = tk.Frame(self, bg=BG)
-        outer.pack(fill="both", expand=True, padx=48, pady=(27, 26))
-        self.progress_card = tk.Frame(
-            outer, bg=PANEL, highlightbackground=LINE, highlightthickness=1
-        )
-        self.progress_card.pack(fill="x", pady=(0, 18))
-        content = tk.Frame(self.progress_card, bg=PANEL)
-        content.pack(fill="x", padx=24, pady=17)
-        belt_row = tk.Frame(content, bg=PANEL)
-        belt_row.pack(fill="x")
-        belt_text = tk.Frame(belt_row, bg=PANEL)
-        belt_text.pack(side="left", fill="x", expand=True)
-        self.rank_label = tk.Label(belt_text, text="White belt", bg=PANEL, fg=INK,
-                                   font=self.font_title)
-        self.rank_label.pack(anchor="w", pady=(4, 0))
-        self.belt_canvas = tk.Canvas(belt_row, width=150, height=52, bg=PANEL, highlightthickness=0)
-        self.belt_canvas.pack(side="right", padx=(12, 0), pady=(6, 0))
-        self.belt_art = BeltIllustrations(self.belt_canvas)
-        self.progress_canvas = tk.Canvas(content, height=7, bg="#EEEDE8", highlightthickness=0)
-        self.progress_canvas.pack(fill="x", pady=(16, 8))
-        meta = tk.Frame(content, bg=PANEL)
-        meta.pack(fill="x")
-        self.progress_label = tk.Label(meta, text="0%", bg=PANEL, fg=INK,
-                                       font=(FONT, 10, "bold"))
-        self.progress_label.pack(side="left")
+    # ----- layout ---------------------------------------------------------
+    def _build(self) -> None:
+        f = self.fonts
+        side = ctk.CTkFrame(self, fg_color="transparent", width=SIDEBAR_WIDTH)
+        side.pack(side="left", fill="y", padx=(16, 0), pady=16)
+        side.pack_propagate(False)
+        main = ctk.CTkFrame(self, fg_color="transparent")
+        main.pack(side="left", fill="both", expand=True, padx=16, pady=16)
 
-        self.timer_card = tk.Frame(outer, bg=PANEL, highlightbackground=LINE, highlightthickness=1)
-        self.timer_card.pack(fill="x", pady=(0, 16))
-        timer_content = tk.Frame(self.timer_card, bg=PANEL)
-        timer_content.pack(fill="x", padx=20, pady=13)
-        self.timer_display = tk.Label(timer_content, text="25:00", bg=PANEL, fg=INK,
-                                      font=(FONT, 23, "bold"))
-        self.timer_display.pack(side="left", padx=(0, 20))
-        self.timer_button = tk.Button(timer_content, text="Start", command=self.toggle_timer,
-                                      bg=INK, fg="white", activebackground="#41433E",
-                                      activeforeground="white", relief="flat", bd=0,
-                                      cursor="hand2", padx=15, pady=7)
+        # Sidebar: brand, boards, timer
+        ctk.CTkLabel(side, text="Hajime", text_color=INK, font=f["brand"]).pack(
+            anchor="w", padx=6, pady=(0, 8))
+        timer = _card(side, side="bottom", fill="x", pady=(10, 0))
+        self.mode_switch = ctk.CTkSegmentedButton(
+            timer, values=list(MODE_LABELS.values()), command=self._on_mode_selected,
+            height=26, corner_radius=8, font=f["small"], fg_color=TRACK, selected_color=PANEL,
+            selected_hover_color=PANEL, unselected_color=TRACK, unselected_hover_color=LINE,
+            text_color=INK)
+        self.mode_switch.pack(fill="x", padx=12, pady=(12, 0))
+        self.clock_label = ctk.CTkLabel(timer, text="", text_color=INK, font=f["clock"])
+        self.clock_label.pack(pady=(4, 0))
+        buttons = ctk.CTkFrame(timer, fg_color="transparent")
+        buttons.pack(padx=12, pady=(2, 0))
+        self.timer_button = ctk.CTkButton(
+            buttons, text="Start", width=92, height=32, corner_radius=9, font=f["button"],
+            fg_color=INK, hover_color=INK_HOVER, command=self.toggle_timer)
         self.timer_button.pack(side="left")
-        self.reset_button = tk.Button(timer_content, text="Reset", command=self.reset_timer,
-                                      bg=PANEL, fg=MUTED, activebackground=PANEL,
-                                      activeforeground=INK, relief="flat", bd=0, cursor="hand2")
-        self.reset_button.pack(side="left", padx=(7, 0))
-        self.studied_label = tk.Label(timer_content, text="Today · 0m studied", bg=PANEL,
-                                      fg=MUTED, font=self.font_small)
-        self.studied_label.pack(side="right", anchor="center")
+        ctk.CTkButton(
+            buttons, text="Reset", width=56, height=32, corner_radius=9, font=f["button"],
+            fg_color="transparent", text_color=MUTED, hover_color=TRACK,
+            command=self.reset_timer).pack(side="left", padx=(4, 0))
+        self.focus_label = ctk.CTkLabel(timer, text="", text_color=MUTED, font=f["small"])
+        self.focus_label.pack(pady=(2, 8))
 
-        section = tk.Frame(outer, bg=BG)
-        section.pack(fill="x", pady=(0, 9))
-        tk.Label(section, text="Your list", bg=BG, fg=INK, font=self.font_heading).pack(side="left")
-        add_card = tk.Frame(outer, bg=PANEL, highlightbackground=LINE, highlightthickness=1)
-        add_card.pack(fill="x", pady=(0, 11))
-        self.entry = tk.Entry(add_card, bg=PANEL, fg=INK, insertbackground=INK,
-                              relief="flat", bd=0, font=self.font_body)
-        self.entry.pack(side="left", fill="x", expand=True, padx=(15, 8), ipady=11)
-        self.entry.insert(0, "Add task")
-        self.entry.config(fg=MUTED)
-        self.entry.bind("<FocusIn>", self._entry_focus)
-        self.entry.bind("<FocusOut>", self._entry_blur)
-        self.entry.bind("<Return>", lambda _event: self.add_task())
-        tk.Button(add_card, text="+", command=self.add_task, bg=INK, fg="white",
-                  activebackground="#41433E", activeforeground="white", relief="flat", bd=0,
-                  cursor="hand2", font=(FONT, 16), width=3).pack(side="right", padx=7, pady=6)
+        ctk.CTkButton(
+            side, text="+  Board", height=32, corner_radius=9, font=f["button"], anchor="w",
+            fg_color="transparent", text_color=MUTED, hover_color=TRACK,
+            command=self._start_new_board).pack(side="bottom", fill="x", pady=(6, 0))
+        self.board_list = ctk.CTkScrollableFrame(
+            side, fg_color=PANEL, corner_radius=14, border_width=1, border_color=LINE,
+            scrollbar_button_color=LINE, scrollbar_button_hover_color=FAINT)
+        self.board_list.pack(fill="both", expand=True)
 
-        list_shell = tk.Frame(outer, bg=PANEL, highlightbackground=LINE, highlightthickness=1)
-        list_shell.pack(fill="both", expand=True)
-        self.list_canvas = tk.Canvas(list_shell, bg=PANEL, highlightthickness=0, bd=0)
-        scrollbar = tk.Scrollbar(list_shell, orient="vertical", command=self.list_canvas.yview,
-                                 relief="flat", bd=0, width=8)
-        self.list_canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        self.list_canvas.pack(side="left", fill="both", expand=True)
-        self.task_frame = tk.Frame(self.list_canvas, bg=PANEL)
-        self.task_window = self.list_canvas.create_window(
-            (0, 0), window=self.task_frame, anchor="nw"
-        )
-        self.task_frame.bind("<Configure>", self._on_list_configure)
-        self.list_canvas.bind("<Configure>", self._on_canvas_configure)
-        self.list_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        # Main: header card, add field, task list
+        card = _card(main, fill="x", pady=(0, 10))
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=18, pady=(12, 0))
+        names = ctk.CTkFrame(top, fg_color="transparent")
+        names.pack(side="left", fill="x", expand=True)
+        self.board_label = ctk.CTkLabel(names, text="", text_color=MUTED, font=f["small"],
+                                        anchor="w")
+        self.board_label.pack(anchor="w")
+        self.rank_label = ctk.CTkLabel(names, text="", text_color=INK, font=f["title"],
+                                       anchor="w")
+        self.rank_label.pack(anchor="w")
+        self.belt_canvas = tk.Canvas(top, width=150, height=58, bg=PANEL, highlightthickness=0)
+        self.belt_canvas.pack(side="right")
+        self.belt_art = BeltIllustrations(self.belt_canvas)
+        self.progress = ctk.CTkProgressBar(card, height=7, fg_color=TRACK, progress_color=ACCENT)
+        self.progress.pack(fill="x", padx=18, pady=(8, 4))
+        self.percent_label = ctk.CTkLabel(card, text="", text_color=MUTED, font=f["small"])
+        self.percent_label.pack(anchor="w", padx=18, pady=(0, 10))
 
-    def _entry_focus(self, _event):
-        if self.entry.get() == "Add task":
-            self.entry.delete(0, "end")
-            self.entry.config(fg=INK)
+        add = _card(main, fill="x", pady=(0, 10))
+        self.entry = ctk.CTkEntry(
+            add, placeholder_text="Add a task", font=f["body"], height=38, border_width=0,
+            fg_color=PANEL, text_color=INK, placeholder_text_color=MUTED)
+        self.entry.pack(side="left", fill="x", expand=True, padx=(8, 4), pady=3)
+        self.entry.bind("<Return>", lambda _e: self.add_task())
+        ctk.CTkButton(
+            add, text="+", width=32, height=32, corner_radius=9, font=f["icon"],
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.add_task,
+        ).pack(side="right", padx=(0, 6))
 
-    def _entry_blur(self, _event):
-        if not self.entry.get().strip():
-            self.entry.delete(0, "end")
-            self.entry.insert(0, "Add task")
-            self.entry.config(fg=MUTED)
+        self.task_list = ctk.CTkScrollableFrame(
+            main, fg_color=PANEL, corner_radius=14, border_width=1, border_color=LINE,
+            scrollbar_button_color=LINE, scrollbar_button_hover_color=FAINT)
+        self.task_list.pack(fill="both", expand=True)
 
-    def _on_list_configure(self, _event):
-        self.list_canvas.configure(scrollregion=self.list_canvas.bbox("all"))
-
-    def _on_canvas_configure(self, event):
-        self.list_canvas.itemconfigure(self.task_window, width=event.width)
-
-    def _on_mousewheel(self, event):
-        if self.winfo_containing(event.x_root, event.y_root) in (self.list_canvas, self.task_frame):
-            self.list_canvas.yview_scroll(int(-event.delta / 120), "units")
-
-    def add_task(self):
-        title = self.entry.get().strip()
-        if not title or title == "Add task":
-            return
-        self.tasks.append({"title": title, "done": False})
-        self.entry.delete(0, "end")
-        self.entry.config(fg=INK)
-        self._save()
-        self.refresh()
-        self.entry.focus_set()
-
-    def toggle_task(self, index):
-        was_done = self.tasks[index]["done"]
-        self.tasks[index]["done"] = not was_done
-        self._save()
-        self.refresh()
-
-    def edit_task(self, index):
-        if self.editing_index == index:
-            return
-        self.editing_index = index
-        self.refresh()
-
-    def commit_edit(self, index, entry):
-        title = entry.get().strip()
-        if title:
-            self.tasks[index]["title"] = title
-            self._save()
-        self.editing_index = None
-        self.refresh()
-
-    def begin_task_drag(self, event, index):
-        self.drag_start_index = index
-        self.drag_origin_y = event.y_root
-        self.drag_moved = False
-        self.bind_all("<B1-Motion>", self.drag_task)
-        self.bind_all("<ButtonRelease-1>", self.end_task_drag)
-        return "break"
-
-    def drag_task(self, event):
-        if self.drag_start_index is None:
-            return "break"
-        if abs(event.y_root - self.drag_origin_y) < 8:
-            return "break"
-        self.drag_moved = True
-        pointer_y = self.list_canvas.canvasy(event.y_root - self.list_canvas.winfo_rooty())
-        target_index = min(
-            max(0, int(pointer_y / max(1, self.task_frame.winfo_height()) * len(self.tasks))),
-            len(self.tasks) - 1,
-        )
-        if target_index != self.drag_start_index:
-            task = self.tasks.pop(self.drag_start_index)
-            self.tasks.insert(target_index, task)
-            self.drag_start_index = target_index
-            self.refresh()
-        return "break"
-
-    def end_task_drag(self, event):
-        if self.drag_start_index is not None:
-            index = self.drag_start_index
-            self.drag_start_index = None
-            self.unbind_all("<B1-Motion>")
-            self.unbind_all("<ButtonRelease-1>")
-            if not self.drag_moved:
-                self.edit_task(index)
-            self._save()
-        return "break"
-
-    def delete_task(self, index):
-        del self.tasks[index]
-        self._save()
-        self.refresh()
-
-    def _save(self):
-        try:
-            save_data(DATA_FILE, self.tasks, self.study)
-        except OSError:
-            pass
-
-    def toggle_timer(self):
-        self.timer_running = not self.timer_running
-        self.timer_button.config(text="Pause" if self.timer_running else "Start")
-        if self.timer_running:
-            self.last_tick = time.monotonic()
-            self._timer_tick()
-        elif self.timer_job:
-            self.after_cancel(self.timer_job)
-            self.timer_job = None
-            self.last_tick = None
-
-    def reset_timer(self):
-        self.timer_running = False
-        if self.timer_job:
-            self.after_cancel(self.timer_job)
-            self.timer_job = None
-        self.last_tick = None
-        self.remaining = WORK_SECONDS if self.timer_mode == "Work" else BREAK_SECONDS
-        self.timer_button.config(text="Start")
-        self._draw_timer()
-
-    def _timer_tick(self):
-        if not self.timer_running:
-            return
-        now = time.monotonic()
-        elapsed = max(1, int(now - self.last_tick)) if self.last_tick is not None else 1
-        self.last_tick = now
-        if self.remaining <= 0:
-            self.timer_running = False
-            self.timer_button.config(text="Start")
-            self.timer_job = None
-            self.last_tick = None
-            self.timer_mode = "Break" if self.timer_mode == "Work" else "Work"
-            self.remaining = BREAK_SECONDS if self.timer_mode == "Break" else WORK_SECONDS
-            self._draw_timer()
-            self.bell()
-            return
-        elapsed = min(elapsed, self.remaining)
-        if self.timer_mode == "Work":
-            self.study["seconds"] += elapsed
-            self._save()
-        self.remaining -= elapsed
-        self._draw_timer()
-        self.timer_job = self.after(1000, self._timer_tick)
-
-    def _draw_timer(self):
-        mins, secs = divmod(max(0, self.remaining), 60)
-        self.timer_display.config(text=f"{mins:02d}:{secs:02d}")
-        seconds = self.study.get("seconds", 0)
-        hours, rem = divmod(seconds, 3600)
-        studied = f"{hours}h {rem // 60}m" if hours else f"{seconds // 60}m"
-        self.studied_label.config(text=studied)
-
-    @staticmethod
-    def _belt_state(fraction):
-        if fraction >= 1:
-            return len(BELTS) - 1
-        rank_position = max(0.0, fraction * (len(BELTS) - 1))
-        return min(int(rank_position), len(BELTS) - 2)
-
-    def refresh(self):
-        total = len(self.tasks)
-        complete = sum(1 for task in self.tasks if task["done"])
-        fraction = complete / total if total else 0.0
-        rank = self._belt_state(fraction)
-        name, _color, _edge = BELTS[rank]
-        self.rank_label.config(text=f"{name} belt")
-        self.belt_art.draw(rank)
-        self.progress_label.config(text=f"{round(fraction * 100)}%")
-        self.progress_canvas.delete("all")
-        self.progress_canvas.update_idletasks()
-        width = max(self.progress_canvas.winfo_width(), 20)
-        self.progress_canvas.create_rectangle(0, 0, width * fraction, 7, fill=ACCENT, outline="")
-
-        for child in self.task_frame.winfo_children():
+    # ----- boards ---------------------------------------------------------
+    def refresh_boards(self) -> None:
+        for child in self.board_list.winfo_children():
             child.destroy()
-        if not self.tasks:
+        self._board_buttons = []
+        for index, board in enumerate(self.data.boards):
+            if self._board_edit == index:
+                self._board_entry(board.name, index)
+                continue
+            button = ctk.CTkButton(
+                self.board_list, text=board.name, anchor="w", height=32, corner_radius=9,
+                font=self.fonts["button"], fg_color="transparent", text_color=INK,
+                hover_color=TRACK, command=lambda i=index: self.select_board(i))
+            button.pack(fill="x", pady=1)
+            button.bind("<Double-Button-1>", lambda _e, i=index: self._rename_board(i))
+            for sequence in ("<Button-3>", "<Button-2>") if sys.platform == "darwin" \
+                    else ("<Button-3>",):
+                button.bind(sequence, lambda e, i=index: self._board_context(e, i))
+            self._board_buttons.append((index, button))
+        if self._board_edit == NEW_BOARD:
+            self._board_entry("", NEW_BOARD)
+        self._style_boards()
+
+    def _board_entry(self, initial: str, index: int) -> None:
+        entry = ctk.CTkEntry(self.board_list, font=self.fonts["body"], height=32,
+                             border_width=1, border_color=ACCENT, fg_color=PANEL,
+                             text_color=INK, placeholder_text="Board name")
+        entry.pack(fill="x", pady=1)
+        entry.insert(0, initial)
+        entry.bind("<Return>", lambda _e: self._end_board_edit(index, entry, True))
+        entry.bind("<Escape>", lambda _e: self._end_board_edit(index, entry, False))
+        entry.bind("<FocusOut>", lambda _e: self._end_board_edit(index, entry, True))
+        entry.focus_set()
+        entry.select_range(0, "end")
+        self.after_idle(self.board_list._parent_canvas.yview_moveto, 1.0)
+
+    def _style_boards(self) -> None:
+        for index, button in self._board_buttons:
+            current = index == self.data.active
+            button.configure(fg_color=ACTIVE_BG if current else "transparent",
+                             text_color=ACCENT if current else INK,
+                             hover_color=ACTIVE_BG if current else TRACK)
+
+    def select_board(self, index: int) -> None:
+        if index == self.data.active:
             return
-        for index, task in enumerate(self.tasks):
-            row = tk.Frame(self.task_frame, bg=PANEL)
-            row.pack(fill="x", padx=18)
-            if index:
-                tk.Frame(row, bg=LINE, height=1).pack(fill="x")
-            inner = tk.Frame(row, bg=PANEL)
-            inner.pack(fill="x", pady=9)
-            done = task["done"]
-            check = tk.Canvas(inner, width=20, height=20, bg=PANEL, highlightthickness=0,
-                              bd=0, cursor="hand2")
-            check.pack(side="left", padx=(0, 10))
-            check.create_rectangle(1, 1, 18, 18, fill=ACCENT if done else PANEL,
-                                   outline=ACCENT if done else "#BDBCB5", width=1)
-            if done:
-                check.create_text(9.5, 9.5, text="✓", fill="white", font=(FONT, 9, "bold"))
-            check.bind("<Button-1>", lambda _event, i=index: self.toggle_task(i))
-            if self.editing_index == index:
-                edit = tk.Entry(inner, font=self.font_body, relief="flat", bd=0)
-                edit.insert(0, task["title"])
-                edit.pack(side="left", fill="x", expand=True)
-                edit.bind("<Return>", lambda _e, i=index, w=edit: self.commit_edit(i, w))
-                edit.bind("<FocusOut>", lambda _e, i=index, w=edit: self.commit_edit(i, w))
-                edit.focus_set()
+        self.data.active = index
+        self._editing = None
+        self._save()
+        self._style_boards()
+        self.refresh()
+
+    def _start_new_board(self) -> None:
+        self._board_edit = NEW_BOARD
+        self.refresh_boards()
+
+    def _rename_board(self, index: int) -> None:
+        self._board_edit = index
+        self.after_idle(self.refresh_boards)
+
+    def _end_board_edit(self, index: int, entry: ctk.CTkEntry, commit: bool) -> None:
+        if self._board_edit != index:  # already handled (Return followed by FocusOut)
+            return
+        self._board_edit = None
+        name = storage.clean_board_name(entry.get())
+        if commit and name:
+            if index == NEW_BOARD:
+                self.data.boards.append(Board(name))
+                self.data.active = len(self.data.boards) - 1
+                self._editing = None
             else:
-                label = tk.Label(inner, text=task["title"], bg=PANEL,
-                                 fg="#A3A29B" if done else INK, font=self.font_body,
-                                 anchor="w", justify="left", wraplength=390, cursor="hand2")
-                label.pack(side="left", fill="x", expand=True)
-                label.bind("<ButtonPress-1>", lambda e, i=index: self.begin_task_drag(e, i))
-                if done:
-                    label.config(font=(FONT, 11, "overstrike"))
-            tools = tk.Frame(inner, bg=PANEL)
-            tools.pack(side="right")
-            tk.Button(
-                tools,
-                text="×",
-                command=lambda i=index: self.delete_task(i),
-                bg=PANEL,
-                fg="#AAA9A2",
-                activebackground=PANEL,
-                activeforeground=ACCENT,
-                relief="flat",
-                bd=0,
-                cursor="hand2",
-                font=(FONT, 15),
-                width=2,
-            ).pack(side="left")
+                self.data.boards[index].name = name
+            self._save()
+        self.after_idle(self.refresh_boards)
+        self.after_idle(self.refresh)
 
+    def _board_context(self, event: tk.Event, index: int) -> None:
+        menu = self.board_menu
+        menu.delete(0, "end")
+        menu.add_command(label="Rename", command=lambda: self._rename_board(index))
+        menu.add_command(
+            label="Delete", command=lambda: self._delete_board(index),
+            state="normal" if len(self.data.boards) > 1 else "disabled")
+        menu.tk_popup(event.x_root, event.y_root)
 
-if __name__ == "__main__":
-    HajimeApp().mainloop()
+    def _delete_board(self, index: int) -> None:
+        board = self.data.boards[index]
+        if len(self.data.boards) < 2:
+            return
+        if board.tasks and not messagebox.askyesno(
+                "Delete board", f"Delete “{board.name}” and its {len(board.tasks)} tasks?",
+                parent=self):
+            return
+        del self.data.boards[index]
+        if index < self.data.active:
+            self.data.active -= 1
+        self.data.active = min(self.data.active, len(self.data.boards) - 1)
+        self._editing = None
+        self._save()
+        self.refresh_boards()
+        self.refresh()
+
+    # ----- tasks ----------------------------------------------------------
+    def add_task(self) -> None:
+        title = self.entry.get().strip()[:MAX_TASK_TITLE]
+        if not title:
+            return
+        self.tasks.append(Task(title))
+        self.entry.delete(0, "end")
+        self._save()
+        self.refresh()
+        self.update_idletasks()
+        self.task_list._parent_canvas.yview_moveto(1.0)
+
+    def toggle_task(self, index: int) -> None:
+        task = self.tasks[index]
+        task.done = not task.done
+        self._save()
+        self.refresh()
+
+    def delete_task(self, index: int) -> None:
+        del self.tasks[index]
+        self._editing = None
+        self._save()
+        self.refresh()
+
+    def _begin_edit(self, index: int) -> None:
+        self._editing = index
+        self.refresh()
+
+    def _end_edit(self, index: int, entry: ctk.CTkEntry, commit: bool) -> None:
+        if self._editing != index:  # already handled (Return followed by FocusOut)
+            return
+        self._editing = None
+        title = entry.get().strip()[:MAX_TASK_TITLE]
+        if commit and title:
+            self.tasks[index].title = title
+            self._save()
+        self.after_idle(self.refresh)
+
+    def _drag_start(self, event: tk.Event, index: int) -> None:
+        self._drag_index, self._drag_origin_y, self._drag_moved = index, event.y_root, False
+        self._drag_bindings = (
+            self.bind("<B1-Motion>", self._drag_motion, add="+"),
+            self.bind("<ButtonRelease-1>", self._drag_end, add="+"),
+        )
+
+    def _drag_motion(self, event: tk.Event) -> None:
+        if self._drag_index is None:
+            return
+        if not self._drag_moved and abs(event.y_root - self._drag_origin_y) < DRAG_THRESHOLD_PX:
+            return
+        self._drag_moved = True
+        target = next(
+            (i for i, row in enumerate(self._rows)
+             if row.winfo_rooty() <= event.y_root < row.winfo_rooty() + row.winfo_height()),
+            None,
+        )
+        if target is not None and target != self._drag_index:
+            tasks = self.tasks
+            tasks.insert(target, tasks.pop(self._drag_index))
+            self._drag_index = target
+            self.refresh()
+
+    def _drag_end(self, _event: tk.Event) -> None:
+        index, moved = self._drag_index, self._drag_moved
+        self._drag_index = None
+        motion, release = self._drag_bindings
+        self.unbind("<B1-Motion>", motion)
+        self.unbind("<ButtonRelease-1>", release)
+        if index is None:
+            return
+        if moved:
+            self._save()
+            self.refresh()
+        else:
+            self._begin_edit(index)
+
+    # ----- timer ----------------------------------------------------------
+    def toggle_timer(self) -> None:
+        if self.timer.running:
+            self._credit(self.timer.pause())
+            self._cancel_timer_job()
+            self._save()
+        else:
+            self.timer.start()
+            self._schedule_tick()
+        self._draw_timer()
+
+    def _on_mode_selected(self, label: str) -> None:
+        mode = next(m for m, text in MODE_LABELS.items() if text == label)
+        if mode != self.timer.mode:
+            self._credit(self.timer.switch(mode))
+            self._cancel_timer_job()
+            self._save()
+        self._draw_timer()
+
+    def reset_timer(self) -> None:
+        self._credit(self.timer.reset())
+        self._cancel_timer_job()
+        self._save()
+        self._draw_timer()
+
+    def _schedule_tick(self) -> None:
+        self._timer_job = self.after(250, self._on_tick)
+
+    def _cancel_timer_job(self) -> None:
+        if self._timer_job is not None:
+            self.after_cancel(self._timer_job)
+            self._timer_job = None
+
+    def _on_tick(self) -> None:
+        self._timer_job = None
+        earned, finished = self.timer.tick()
+        self._credit(earned)
+        if finished:
+            self._save()
+            self.bell()
+        elif earned and time.monotonic() - self._last_save >= SAVE_INTERVAL_SECONDS:
+            self._save()
+        self._draw_timer()
+        if self.timer.running:
+            self._schedule_tick()
+
+    def _credit(self, seconds: int) -> None:
+        if seconds:
+            self.data.roll_day()
+            self.data.focus_seconds += seconds
+
+    def _draw_timer(self) -> None:
+        minutes, seconds = divmod(self.timer.remaining, 60)
+        clock = f"{minutes:02d}:{seconds:02d}"
+        self.clock_label.configure(
+            text=clock, text_color=ACCENT_BREAK if self.timer.mode == BREAK else INK)
+        self.mode_switch.set(MODE_LABELS[self.timer.mode])
+        self.timer_button.configure(text="Pause" if self.timer.running else "Start")
+        self.title(f"{clock} · Hajime" if self.timer.running else "Hajime")
+        hours, rest = divmod(self.data.focus_seconds, 3600)
+        self.focus_label.configure(
+            text=f"{hours}h {rest // 60}m today" if hours else f"{rest // 60}m today")
+
+    # ----- rendering ------------------------------------------------------
+    def refresh(self) -> None:
+        """Redraw the active board: header, belt and task list."""
+        tasks = self.tasks
+        fraction = completion(tasks)
+        rank = belt_rank(fraction)
+        self.board_label.configure(text=self.data.board.name)
+        self.rank_label.configure(text=f"{BELTS[rank][0]} belt")
+        self.belt_art.draw(rank)
+        self.progress.set(fraction)
+        done = sum(t.done for t in tasks)
+        self.percent_label.configure(
+            text=f"{done}/{len(tasks)} done" if tasks else "No tasks yet")
+
+        for child in self.task_list.winfo_children():
+            child.destroy()
+        self._rows = [self._build_row(i, t) for i, t in enumerate(tasks)]
+
+    def _build_row(self, index: int, task: Task) -> ctk.CTkFrame:
+        dragging = index == self._drag_index and self._drag_moved
+        row = ctk.CTkFrame(self.task_list, corner_radius=9,
+                           fg_color=HOVER_ROW if dragging else "transparent")
+        row.pack(fill="x", padx=2, pady=1)
+
+        box = ctk.CTkCheckBox(
+            row, text="", width=22, checkbox_width=20, checkbox_height=20, corner_radius=6,
+            border_width=2, fg_color=ACCENT, hover_color=ACCENT, border_color="#BDBCB5",
+            checkmark_color="white",
+            command=lambda i=index: self.after_idle(self.toggle_task, i))
+        box.pack(side="left", padx=(8, 2), pady=7)
+        if task.done:
+            box.select()
+
+        if self._editing == index:
+            edit = ctk.CTkEntry(row, font=self.fonts["body"], height=28, border_width=1,
+                                border_color=LINE, fg_color=PANEL, text_color=INK)
+            edit.insert(0, task.title)
+            edit.pack(side="left", fill="x", expand=True, padx=(0, 6))
+            edit.bind("<Return>", lambda _e, i=index, w=edit: self._end_edit(i, w, True))
+            edit.bind("<Escape>", lambda _e, i=index, w=edit: self._end_edit(i, w, False))
+            edit.bind("<FocusOut>", lambda _e, i=index, w=edit: self._end_edit(i, w, True))
+            edit.focus_set()
+            edit.select_range(0, "end")
+        else:
+            label = ctk.CTkLabel(
+                row, text=task.title, anchor="w", justify="left", wraplength=TASK_WRAP,
+                text_color=FAINT if task.done else INK,
+                font=self.fonts["done" if task.done else "body"], cursor="hand2")
+            label.pack(side="left", fill="x", expand=True, padx=(0, 4))
+            label.bind("<ButtonPress-1>", lambda e, i=index: self._drag_start(e, i))
+
+        remove = ctk.CTkLabel(row, text="×", width=26, text_color=FAINT, font=self.fonts["icon"],
+                              cursor="hand2")
+        remove.pack(side="right", padx=(0, 4))
+        remove.bind("<Enter>", lambda _e, w=remove: w.configure(text_color=ACCENT))
+        remove.bind("<Leave>", lambda _e, w=remove: w.configure(text_color=FAINT))
+        remove.bind("<Button-1>", lambda _e, i=index: self.after_idle(self.delete_task, i))
+        return row
+
+    # ----- persistence / lifecycle ---------------------------------------
+    def report_callback_exception(self, exc, val, tb) -> None:
+        """Log UI callback errors instead of losing them on windowed launches."""
+        LOG.error("Unhandled error in UI callback", exc_info=(exc, val, tb))
+        self.title("Hajime · something went wrong (see hajime.log)")
+
+    def _save(self) -> None:
+        self._last_save = time.monotonic()
+        try:
+            storage.save(self.data_path, self.data)
+        except OSError as error:
+            self.title(f"Hajime · could not save ({error.strerror or 'I/O error'})")
+
+    def _on_close(self) -> None:
+        self._credit(self.timer.pause())
+        self._save()
+        self.destroy()

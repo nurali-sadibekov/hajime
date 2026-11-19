@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import base64
-from pathlib import Path
 import re
 import tkinter as tk
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from .config import BELT_ASSET_DIR, BELTS
 
@@ -21,6 +21,7 @@ class BeltIllustrations:
 
     def draw(self, rank: int) -> None:
         self.canvas.delete("all")
+        self._photo = None
         asset = self.asset_dir / f"{BELTS[rank][0].lower()}.svg"
         if self._draw_svg(asset):
             return
@@ -36,9 +37,10 @@ class BeltIllustrations:
             self._photo = tk.PhotoImage(data=base64.b64encode(png).decode("ascii"), format="png")
             self.canvas.create_image(75, 29, image=self._photo)
             return True
-        except Exception:
-            # SVG engines and Tk builds vary; the native renderer is the
-            # dependency-free fallback for any conversion or image error.
+        except Exception:  # noqa: BLE001 - CairoSVG/Tk failures vary widely
+            # Missing Cairo libraries, bad SVGs or old Tk builds all land here;
+            # the pure-Tk renderer is the dependency-free fallback.
+            self.canvas.delete("all")
             return self._draw_svg_with_tk(asset)
 
     def _draw_svg_with_tk(self, asset: Path) -> bool:
@@ -68,7 +70,7 @@ class BeltIllustrations:
                     joinstyle="round",
                 )
             return True
-        except (ET.ParseError, OSError, KeyError, ValueError):
+        except (ET.ParseError, OSError, KeyError, ValueError, IndexError, tk.TclError):
             return False
 
     @staticmethod
