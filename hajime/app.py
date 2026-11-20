@@ -36,6 +36,7 @@ from .config import (
     WORK_SECONDS,
 )
 from .models import BREAK, WORK, Board, Pomodoro, Task, belt_rank, completion
+from .stats_window import StatsWindow
 
 WINDOW_SIZE = (640, 480)  # 4:3
 SIDEBAR_WIDTH = 196
@@ -72,6 +73,7 @@ class HajimeApp(ctk.CTk):
         self.data = storage.load(self.data_path)
         self.timer = Pomodoro(WORK_SECONDS, BREAK_SECONDS)
         self._timer_job: str | None = None
+        self.stats_window: StatsWindow | None = None
         self._last_save = time.monotonic()
         self._editing: int | None = None  # task being edited
         self._board_edit: int | None = None  # board index being renamed, or NEW_BOARD
@@ -117,8 +119,14 @@ class HajimeApp(ctk.CTk):
         main.pack(side="left", fill="both", expand=True, padx=16, pady=16)
 
         # Sidebar: brand, boards, timer
-        ctk.CTkLabel(side, text="Hajime", text_color=INK, font=f["brand"]).pack(
-            anchor="w", padx=6, pady=(0, 8))
+        brand = ctk.CTkFrame(side, fg_color="transparent")
+        brand.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(brand, text="Hajime", text_color=INK, font=f["brand"]).pack(
+            side="left", padx=6)
+        ctk.CTkButton(
+            brand, text="▦  Activity", width=84, height=26, corner_radius=8, font=f["small"],
+            fg_color="transparent", text_color=MUTED, hover_color=TRACK,
+            command=self.show_stats).pack(side="right")
         timer = _card(side, side="bottom", fill="x", pady=(10, 0))
         self.mode_switch = ctk.CTkSegmentedButton(
             timer, values=list(MODE_LABELS.values()), command=self._on_mode_selected,
@@ -411,9 +419,15 @@ class HajimeApp(ctk.CTk):
             self._schedule_tick()
 
     def _credit(self, seconds: int) -> None:
-        if seconds:
-            self.data.roll_day()
-            self.data.focus_seconds += seconds
+        self.data.add_focus(seconds)
+
+    def show_stats(self) -> None:
+        if self.stats_window is not None and self.stats_window.winfo_exists():
+            self.stats_window.refresh()
+            self.stats_window.lift()
+            self.stats_window.focus()
+            return
+        self.stats_window = StatsWindow(self)
 
     def _draw_timer(self) -> None:
         minutes, seconds = divmod(self.timer.remaining, 60)
@@ -498,6 +512,8 @@ class HajimeApp(ctk.CTk):
             storage.save(self.data_path, self.data)
         except OSError as error:
             self.title(f"Hajime · could not save ({error.strerror or 'I/O error'})")
+        if self.stats_window is not None and self.stats_window.winfo_exists():
+            self.stats_window.refresh()
 
     def _on_close(self) -> None:
         self._credit(self.timer.pause())

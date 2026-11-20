@@ -69,3 +69,15 @@ def test_long_titles_are_truncated(app):
     app.entry.insert(0, "x" * 500)
     app.add_task()
     assert len(app.tasks[0].title) == 200
+
+
+def test_stats_window_opens_and_follows_history(app):
+    app.data.history["2025-06-01"] = 3600
+    app.show_stats()
+    app.update()
+    window = app.stats_window
+    assert window.year == 2026 and window.prev_button.cget("state") == "normal"
+    window.set_year(2025)
+    assert window.total_label.cget("text").startswith("1h 0m")
+    app.show_stats()  # reuses the open window
+    assert app.stats_window is window

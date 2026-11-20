@@ -1,4 +1,4 @@
-"""JSON persistence for boards, tasks and today's accumulated focus time."""
+"""JSON persistence for boards, tasks and the per-day study history."""
 
 from __future__ import annotations
 
@@ -41,8 +41,7 @@ def clean_board_name(name: str) -> str:
 class AppData:
     boards: list[Board] = field(default_factory=list)
     active: int = 0
-    focus_day: str = field(default_factory=lambda: date.today().isoformat())
-    focus_seconds: int = 0
+    history: dict[str, int] = field(default_factory=dict)  # ISO date -> studied seconds
 
     def __post_init__(self) -> None:
         if not self.boards:
@@ -53,11 +52,30 @@ class AppData:
     def board(self) -> Board:
         return self.boards[self.active]
 
-    def roll_day(self) -> None:
-        """Reset the focus counter when the calendar day changes."""
-        today = date.today().isoformat()
-        if self.focus_day != today:
-            self.focus_day, self.focus_seconds = today, 0
+    @property
+    def focus_seconds(self) -> int:
+        """Seconds studied today."""
+        return self.history.get(date.today().isoformat(), 0)
+
+    def add_focus(self, seconds: int) -> None:
+        if seconds > 0:
+            today = date.today().isoformat()
+            self.history[today] = self.history.get(today, 0) + seconds
+
+
+def _parse_history(values: object) -> dict[str, int]:
+    if not isinstance(values, dict):
+        return {}
+    history = {}
+    for key, value in values.items():
+        try:
+            day = date.fromisoformat(str(key)).isoformat()
+            seconds = int(value)
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            history[day] = seconds
+    return history
 
 
 def _parse_tasks(values: object) -> list[Task]:
@@ -106,16 +124,13 @@ def load(path: Path) -> AppData:
         active = int(raw.get("active", 0))
     except (TypeError, ValueError):
         active = 0
-    data = AppData(boards=boards, active=active)
+    data = AppData(boards=boards, active=active, history=_parse_history(raw.get("history")))
 
-    study = raw.get("study")
+    study = raw.get("study")  # pre-heatmap format: only the latest day was kept
     if isinstance(study, dict):
-        try:
-            data.focus_day = str(study.get("date", data.focus_day))
-            data.focus_seconds = max(0, int(study.get("seconds", 0)))
-        except (TypeError, ValueError):
-            data.focus_seconds = 0
-    data.roll_day()
+        legacy = _parse_history({study.get("date"): study.get("seconds")})
+        for day, seconds in legacy.items():
+            data.history[day] = max(data.history.get(day, 0), seconds)
     return data
 
 
@@ -128,7 +143,7 @@ def save(path: Path, data: AppData) -> None:
             {"name": b.name, "tasks": [{"title": t.title, "done": t.done} for t in b.tasks]}
             for b in data.boards
         ],
-        "study": {"date": data.focus_day, "seconds": data.focus_seconds},
+        "history": dict(sorted(data.history.items())),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")

@@ -9,13 +9,14 @@ def test_roundtrip(tmp_path):
     path = tmp_path / "sub" / "tasks.json"
     data = storage.AppData(
         boards=[Board("Study", [Task("ünï", True), Task("b")]), Board("Judo")],
-        active=1, focus_seconds=90,
+        active=1, history={date.today().isoformat(): 90, "2024-03-05": 600},
     )
     storage.save(path, data)
     loaded = storage.load(path)
     assert loaded.boards == data.boards
     assert loaded.active == 1
     assert loaded.focus_seconds == 90
+    assert loaded.history["2024-03-05"] == 600
 
 
 def test_missing_file_gives_defaults(tmp_path):
@@ -35,19 +36,33 @@ def test_legacy_list_and_junk_entries(tmp_path):
     assert storage.load(path).board.tasks == [Task("x")]
 
 
-def test_focus_resets_on_new_day(tmp_path):
+def test_legacy_study_field_is_kept_in_history(tmp_path):
     path = tmp_path / "tasks.json"
     old = (date.today() - timedelta(days=1)).isoformat()
     path.write_text(json.dumps({"tasks": [], "study": {"date": old, "seconds": 500}}),
                     encoding="utf-8")
-    assert storage.load(path).focus_seconds == 0
+    data = storage.load(path)
+    assert data.history == {old: 500}
+    assert data.focus_seconds == 0
 
 
-def test_bad_seconds_value(tmp_path):
+def test_bad_history_values_are_ignored(tmp_path):
     path = tmp_path / "tasks.json"
-    path.write_text(json.dumps({"study": {"date": date.today().isoformat(), "seconds": "x"}}),
+    path.write_text(json.dumps({"history": {"nope": 5, "2024-01-01": "x", "2024-01-02": 7,
+                                            "2024-01-03": -4},
+                                "study": {"date": date.today().isoformat(), "seconds": "x"}}),
                     encoding="utf-8")
-    assert storage.load(path).focus_seconds == 0
+    data = storage.load(path)
+    assert data.history == {"2024-01-02": 7}
+    assert data.focus_seconds == 0
+
+
+def test_add_focus_accumulates_today():
+    data = storage.AppData()
+    data.add_focus(30)
+    data.add_focus(0)
+    data.add_focus(15)
+    assert data.focus_seconds == 45
 
 
 def test_migrate_legacy(tmp_path):
