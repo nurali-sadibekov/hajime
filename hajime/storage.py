@@ -10,7 +10,14 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from .config import MAX_BOARD_NAME, MAX_TASK_TITLE
+from .config import (
+    MAX_BOARD_NAME,
+    MAX_BOARDS,
+    MAX_HISTORY_DAYS,
+    MAX_TASK_TITLE,
+    MAX_TASKS_PER_BOARD,
+    SECONDS_PER_DAY,
+)
 from .models import Board, Task
 
 APP_DIR_NAME = "Hajime"
@@ -49,6 +56,10 @@ class AppData:
         self.active = min(max(self.active, 0), len(self.boards) - 1)
 
     @property
+    def has_content(self) -> bool:
+        return bool(self.history) or any(b.tasks for b in self.boards)
+
+    @property
     def board(self) -> Board:
         return self.boards[self.active]
 
@@ -74,15 +85,16 @@ def _parse_history(values: object) -> dict[str, int]:
         except (TypeError, ValueError):
             continue
         if seconds > 0:
-            history[day] = seconds
-    return history
+            history[day] = min(seconds, SECONDS_PER_DAY)
+    newest = sorted(history)[-MAX_HISTORY_DAYS:]
+    return {day: history[day] for day in newest}
 
 
 def _parse_tasks(values: object) -> list[Task]:
     if not isinstance(values, list):
         return []
     tasks = []
-    for value in values:
+    for value in values[:MAX_TASKS_PER_BOARD]:
         if isinstance(value, dict):
             title = str(value.get("title", "")).strip()[:MAX_TASK_TITLE]
             if title:
@@ -94,28 +106,19 @@ def _parse_boards(values: object) -> list[Board]:
     if not isinstance(values, list):
         return []
     boards = []
-    for value in values:
+    for value in values[:MAX_BOARDS]:
         if isinstance(value, dict):
             name = clean_board_name(str(value.get("name", ""))) or DEFAULT_BOARD
             boards.append(Board(name, _parse_tasks(value.get("tasks"))))
     return boards
 
 
-def load(path: Path) -> AppData:
-    """Load data; a missing file yields defaults and a corrupt one is set aside."""
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return AppData()
-    except (OSError, ValueError):
-        _quarantine(path)
-        return AppData()
-
+def from_payload(raw: object) -> AppData | None:
+    """Build data from decoded JSON of any supported format; ``None`` if unusable."""
     if isinstance(raw, list):  # legacy: a bare task list
         return AppData(boards=[Board(DEFAULT_BOARD, _parse_tasks(raw))])
     if not isinstance(raw, dict):
-        _quarantine(path)
-        return AppData()
+        return None
 
     boards = _parse_boards(raw.get("boards"))
     if not boards and "tasks" in raw:  # v1: a single task list
@@ -134,9 +137,8 @@ def load(path: Path) -> AppData:
     return data
 
 
-def save(path: Path, data: AppData) -> None:
-    """Atomically write data as readable UTF-8 JSON."""
-    payload = {
+def to_payload(data: AppData) -> dict:
+    return {
         "version": FORMAT_VERSION,
         "active": data.active,
         "boards": [
@@ -145,10 +147,37 @@ def save(path: Path, data: AppData) -> None:
         ],
         "history": dict(sorted(data.history.items())),
     }
+
+
+def load(path: Path) -> AppData:
+    """Load data; a missing file yields defaults and a corrupt one is set aside."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return AppData()
+    except (OSError, ValueError):
+        _quarantine(path)
+        return AppData()
+    data = from_payload(raw)
+    if data is None:
+        _quarantine(path)
+        return AppData()
+    return data
+
+
+def save(path: Path, data: AppData) -> None:
+    """Atomically write data as readable UTF-8 JSON."""
+    payload = to_payload(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def user_data_path(user_id: str) -> Path:
+    """Local cache of one signed-in user's data, kept apart from other accounts."""
+    safe = "".join(c for c in user_id if c.isalnum() or c == "-")
+    return default_data_path().with_name(f"tasks-{safe}.json")
 
 
 def migrate_legacy(path: Path, legacy: Path) -> None:

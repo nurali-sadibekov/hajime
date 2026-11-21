@@ -100,8 +100,40 @@ def test_floating_timer_is_topmost_and_synced(app):
 
 
 def test_ringtone_is_valid_wav():
-    import io, wave
+    import io
+    import wave
+
     from hajime.sound import build_ringtone
 
     with wave.open(io.BytesIO(build_ringtone())) as wav:
         assert wav.getnframes() > 0
+
+
+def test_remote_copy_replaces_boards_but_keeps_view_and_merges_history(app, tmp_path):
+    app.entry.insert(0, "local")
+    app.add_task()
+    app.data.history["2026-01-01"] = 600
+    payload = storage.to_payload(app.data)
+    payload["boards"][0]["tasks"] = [{"title": "from phone", "done": False}]
+    payload["history"] = {"2026-01-01": 300, "2026-01-02": 60}
+    app._apply_remote(payload)
+    app.update()
+    assert [t.title for t in app.tasks] == ["from phone"]
+    assert app.data.history == {"2026-01-01": 600, "2026-01-02": 60}
+    assert [t.title for t in storage.load(tmp_path / "tasks.json").board.tasks] == ["from phone"]
+
+
+def test_signed_out_app_never_writes_placeholder_data(tmp_path, monkeypatch):
+    from hajime.app import HajimeApp
+
+    monkeypatch.setenv("HAJIME_DATA_FILE", str(tmp_path / "tasks.json"))
+    monkeypatch.delenv("HAJIME_SUPABASE_URL", raising=False)
+    (tmp_path / "tasks.json").write_text('{"tasks": [{"title": "real", "done": false}]}')
+    try:
+        instance = HajimeApp()
+    except tk.TclError:
+        pytest.skip("no display available")
+    instance.update()
+    instance._on_close()
+    kept = storage.load(tmp_path / "tasks.json")
+    assert [t.title for t in kept.board.tasks] == ["real"]

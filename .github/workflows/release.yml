@@ -24,10 +24,17 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y python3-tk
       - run: python -m pip install ".[exe]"
+      - name: Bundle Supabase settings (publishable key only)
+        env:
+          HAJIME_SUPABASE_URL: ${{ secrets.HAJIME_SUPABASE_URL }}
+          HAJIME_SUPABASE_ANON_KEY: ${{ secrets.HAJIME_SUPABASE_ANON_KEY }}
+        run: python packaging/write_config.py
       - name: Build
         run: >
           pyinstaller --noconfirm --windowed --name Hajime
           --collect-data customtkinter
+          --hidden-import websocket
+          --hidden-import hajime._bundled_config
           --add-data "hajime/assets${{ matrix.sep }}hajime/assets"
           --paths . packaging/launcher.py
       - name: Package

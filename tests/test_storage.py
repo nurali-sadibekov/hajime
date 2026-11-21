@@ -89,3 +89,16 @@ def test_active_index_is_clamped_and_boards_never_empty(tmp_path):
                     encoding="utf-8")
     data = storage.load(path)
     assert data.board.name == "A b" and data.active == 0
+
+
+def test_hostile_payload_is_clamped():
+    from hajime.config import MAX_BOARDS, MAX_TASKS_PER_BOARD, SECONDS_PER_DAY
+
+    raw = {"boards": [{"name": "b" * 500,
+                       "tasks": [{"title": "t" * 5000, "done": True}] * 10_000}] * 500,
+           "history": {"2026-01-01": 10**12}}
+    data = storage.from_payload(raw)
+    assert len(data.boards) == MAX_BOARDS
+    assert len(data.boards[0].tasks) == MAX_TASKS_PER_BOARD
+    assert len(data.boards[0].name) <= 24 and len(data.boards[0].tasks[0].title) <= 200
+    assert data.history == {"2026-01-01": SECONDS_PER_DAY}

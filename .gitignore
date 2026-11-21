@@ -7,3 +7,10 @@ dist/
 .pytest_cache/
 .ruff_cache/
 hajime_tasks.json
+
+# build output and secrets
+build.env
+.build-venv/
+release/
+*.spec
+hajime/_bundled_config.py

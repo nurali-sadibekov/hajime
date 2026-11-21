@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import queue
+import secrets
 import sys
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -12,7 +15,8 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
-from . import storage
+from . import cloud, storage
+from .auth_screen import AuthScreen
 from .belt_art import BeltIllustrations
 from .config import (
     ACCENT,
@@ -28,15 +32,18 @@ from .config import (
     INK,
     INK_HOVER,
     LINE,
+    MAX_BOARD_NAME,
+    MAX_BOARDS,
     MAX_TASK_TITLE,
+    MAX_TASKS_PER_BOARD,
     MUTED,
     PANEL,
     SAVE_INTERVAL_SECONDS,
     TRACK,
     WORK_SECONDS,
 )
-from .models import BREAK, WORK, Board, Pomodoro, Task, belt_rank, completion, next_belt_goal
 from .mini_timer import MiniTimer
+from .models import BREAK, WORK, Board, Pomodoro, Task, belt_rank, completion, next_belt_goal
 from .sound import play_ringtone
 from .stats_window import StatsPanel
 
@@ -66,13 +73,21 @@ class HajimeApp(ctk.CTk):
     def __init__(self, data_path: Path | None = None) -> None:
         ctk.set_appearance_mode("light")
         super().__init__(fg_color=BG)
+        # An explicit ``data_path`` means plain local storage with no account.
+        self._cloud_mode = data_path is None
         if data_path is None:
-            data_path = storage.default_data_path()
-            storage.migrate_legacy(
-                data_path, Path(__file__).resolve().parent.parent / "hajime_tasks.json"
-            )
-        self.data_path = data_path
-        self.data = storage.load(self.data_path)
+            self.data = storage.AppData()  # placeholder; never written to disk (see _save)
+        else:
+            self.data = storage.load(data_path)
+        self.data_path: Path | None = data_path  # None until a session or local mode starts
+        self._events: queue.Queue = queue.Queue()
+        self._auth: cloud.SupabaseAuth | None = None
+        self._sync: cloud.CloudSync | None = None
+        self._signin_cancel: threading.Event | None = None
+        self.auth_screen: AuthScreen | None = None
+        self.client_id = secrets.token_hex(8)
+        self.account_email = ""
+        self.sync_online = True
         self.timer = Pomodoro(WORK_SECONDS, BREAK_SECONDS)
         self._timer_job: str | None = None
         self.stats_panel: StatsPanel | None = None
@@ -107,6 +122,10 @@ class HajimeApp(ctk.CTk):
         self.refresh_boards()
         self.refresh()
         self._draw_timer()
+        if self._cloud_mode:
+            self._update_account()
+            self._poll_events()
+            self._show_auth()
 
     @property
     def tasks(self) -> list[Task]:
@@ -130,6 +149,17 @@ class HajimeApp(ctk.CTk):
             brand, text="▦  Activity", width=84, height=26, corner_radius=8, font=f["small"],
             fg_color="transparent", text_color=MUTED, hover_color=TRACK,
             command=self.show_stats).pack(side="right")
+        if self._cloud_mode:
+            account = ctk.CTkFrame(side, fg_color="transparent")
+            account.pack(side="bottom", fill="x", pady=(6, 0))
+            self.account_label = ctk.CTkLabel(
+                account, text="", text_color=MUTED, font=f["small"], anchor="w")
+            self.account_label.pack(side="left", padx=6)
+            self.account_button = ctk.CTkButton(
+                account, text="Sign out", width=60, height=24, corner_radius=8, font=f["small"],
+                fg_color="transparent", text_color=MUTED, hover_color=TRACK,
+                command=self._account_action)
+            self.account_button.pack(side="right")
         timer = _card(side, side="bottom", fill="x", pady=(10, 0))
         self.mode_switch = ctk.CTkSegmentedButton(
             timer, values=list(MODE_LABELS.values()), command=self._on_mode_selected,
@@ -277,6 +307,10 @@ class HajimeApp(ctk.CTk):
         name = storage.clean_board_name(entry.get())
         if commit and name:
             if index == NEW_BOARD:
+                if len(self.data.boards) >= MAX_BOARDS:
+                    self.bell()
+                    self.after_idle(self.refresh_boards)
+                    return
                 self.data.boards.append(Board(name))
                 self.data.active = len(self.data.boards) - 1
                 self._editing = None
@@ -290,10 +324,34 @@ class HajimeApp(ctk.CTk):
         menu = self.board_menu
         menu.delete(0, "end")
         menu.add_command(label="Rename", command=lambda: self._rename_board(index))
+        menu.add_command(label="Duplicate", command=lambda: self._duplicate_board(index))
         menu.add_command(
             label="Delete", command=lambda: self._delete_board(index),
             state="normal" if len(self.data.boards) > 1 else "disabled")
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _duplicate_board(self, index: int) -> None:
+        if len(self.data.boards) >= MAX_BOARDS:
+            self.bell()
+            return
+        source = self.data.boards[index]
+        names = {b.name for b in self.data.boards}
+        suffix, n = " copy", 1
+        while True:
+            name = storage.clean_board_name(source.name)
+            room = MAX_BOARD_NAME - len(suffix)
+            name = f"{name[:room].rstrip()}{suffix}"
+            if name not in names:
+                break
+            n += 1
+            suffix = f" copy {n}"
+        copy = Board(name, [Task(t.title, t.done) for t in source.tasks])
+        self.data.boards.insert(index + 1, copy)
+        self.data.active = index + 1
+        self._editing = None
+        self._save()
+        self.refresh_boards()
+        self.refresh()
 
     def _delete_board(self, index: int) -> None:
         board = self.data.boards[index]
@@ -316,6 +374,9 @@ class HajimeApp(ctk.CTk):
     def add_task(self) -> None:
         title = self.entry.get().strip()[:MAX_TASK_TITLE]
         if not title:
+            return
+        if len(self.tasks) >= MAX_TASKS_PER_BOARD:
+            self.bell()  # board is full
             return
         self.tasks.append(Task(title))
         self.entry.delete(0, "end")
@@ -430,7 +491,7 @@ class HajimeApp(ctk.CTk):
             if not play_ringtone():
                 self.bell()
         elif earned and time.monotonic() - self._last_save >= SAVE_INTERVAL_SECONDS:
-            self._save()
+            self._save(upload=False)  # local only; pause/finish/quit upload, saving requests
         self._draw_timer()
         if self.timer.running:
             self._schedule_tick()
@@ -546,16 +607,229 @@ class HajimeApp(ctk.CTk):
         LOG.error("Unhandled error in UI callback", exc_info=(exc, val, tb))
         self.title("Hajime · something went wrong (see hajime.log)")
 
-    def _save(self) -> None:
+    def _save(self, upload: bool = True) -> None:
         self._last_save = time.monotonic()
+        if self.data_path is None:  # signed out: the placeholder must not overwrite real data
+            return
         try:
             storage.save(self.data_path, self.data)
         except OSError as error:
             self.title(f"Hajime · could not save ({error.strerror or 'I/O error'})")
+        if self._sync is not None and upload:
+            self._sync.push(storage.to_payload(self.data))
         if self.stats_panel is not None and self.stats_panel.visible:
             self.stats_panel.refresh()
 
     def _on_close(self) -> None:
         self._credit(self.timer.pause())
         self._save()
+        if self._sync is not None:
+            self._sync.flush()
         self.destroy()
+
+    # ----- account & sync -------------------------------------------------
+    def _show_auth(self) -> None:
+        if self.auth_screen is None:
+            self.auth_screen = AuthScreen(
+                self, self.fonts, self._google_clicked, self._cancel_signin, self._use_local)
+        self.auth_screen.show()
+        config = cloud.load_config()
+        if config is None:
+            self._auth = None
+            self.auth_screen.idle(
+                "Cloud sync isn't configured. Set HAJIME_SUPABASE_URL and "
+                "HAJIME_SUPABASE_ANON_KEY (see the README).", configured=False)
+            return
+        if self._auth is None or self._auth.config != config:
+            self._auth = cloud.SupabaseAuth(config)
+        if self._auth.session or self._auth.load_saved():
+            self.auth_screen.busy("Signing you in…")
+            threading.Thread(target=self._restore_session, args=(self._auth,),
+                             daemon=True).start()
+        else:
+            self.auth_screen.idle()
+
+    def _restore_session(self, auth: cloud.SupabaseAuth) -> None:
+        try:
+            auth.access_token()  # renews an expired token
+        except cloud.NetworkError:
+            pass  # offline: carry on with the cached copy and sync later
+        except cloud.CloudError:
+            self._events.put(("signin_failed", "Your session expired. Please sign in again.", None))
+            return
+        self._events.put(("signed_in", None, None))
+
+    def _google_clicked(self) -> None:
+        auth = self._auth
+        if auth is None:
+            return
+        cancel = self._signin_cancel = threading.Event()
+        self.auth_screen.busy("Finish signing in with Google in your browser…", cancellable=True)
+
+        def work() -> None:
+            try:
+                auth.sign_in_with_google(cancel)
+            except cloud.CloudError as error:
+                self._events.put(("signin_failed", "" if cancel.is_set() else str(error), None))
+            except Exception as error:  # never leave the screen stuck on "waiting"
+                LOG.exception("sign-in failed")
+                self._events.put(("signin_failed", str(error), None))
+            else:
+                self._events.put(("signed_in", None, None))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cancel_signin(self) -> None:
+        if self._signin_cancel is not None:
+            self._signin_cancel.set()
+
+    def _use_local(self) -> None:
+        """Run without an account: plain local file, no sync."""
+        self.data_path = storage.default_data_path()
+        storage.migrate_legacy(
+            self.data_path, Path(__file__).resolve().parent.parent / "hajime_tasks.json")
+        self.data = storage.load(self.data_path)
+        self.account_email = ""
+        self._reset_views()
+        self._update_account()
+        self.auth_screen.hide()
+
+    def _reset_views(self) -> None:
+        self._editing = None
+        self._board_edit = None
+        self.refresh_boards()
+        self.refresh()
+        self._draw_timer()
+
+    def _on_signed_in(self) -> None:
+        session = self._auth.session if self._auth else None
+        if session is None:
+            self._show_auth()
+            return
+        if self._sync is not None:
+            self._sync.stop()
+        self.account_email = session.email
+        self.sync_online = True
+        self.data_path = storage.user_data_path(session.user_id)
+        legacy = storage.default_data_path()
+        had_cache = self.data_path.exists()
+        seeded = False
+        if not had_cache:  # pick up the pre-1.1 file next to the source tree, if any
+            storage.migrate_legacy(
+                legacy, Path(__file__).resolve().parent.parent / "hajime_tasks.json")
+        if had_cache:
+            self.data = storage.load(self.data_path)
+        elif legacy.is_file():  # first sign-in: adopt tasks made before accounts existed
+            self.data = storage.load(legacy)
+            seeded = True
+        else:
+            self.data = storage.AppData()
+        self._reset_views()
+
+        sync = self._sync = cloud.CloudSync(
+            self._auth, self.client_id,
+            lambda event, payload: self._events.put((event, payload, sync)))
+        self._update_account()
+        try:
+            storage.save(self.data_path, self.data)
+            if seeded:
+                legacy.replace(legacy.with_name(legacy.name + ".imported"))
+        except OSError:
+            LOG.warning("could not write the local cache", exc_info=True)
+        sync.start(storage.to_payload(self.data))
+        if had_cache:
+            self.auth_screen.hide()
+        else:  # nothing local to show yet: wait for the first pull
+            self.auth_screen.busy("Syncing your boards…")
+
+    def _account_action(self) -> None:
+        if self._sync is not None:
+            self._sign_out()
+        else:
+            self._show_auth()
+
+    def _sign_out(self, message: str = "") -> None:
+        self._credit(self.timer.pause())
+        self._cancel_timer_job()
+        if self._sync is not None:
+            self._save()
+            self._sync.flush()
+            self._sync = None
+        if self.mini is not None and self.mini.visible:
+            self.mini.hide()
+        if self._auth is not None:
+            self._auth.sign_out()
+        self.timer = Pomodoro(WORK_SECONDS, BREAK_SECONDS)
+        self.data = storage.AppData()
+        self.data_path = None
+        self.account_email = ""
+        self._reset_views()
+        self._update_account()
+        self._show_auth()
+        if message:
+            self.auth_screen.idle(message, error=True)
+
+    def _update_account(self) -> None:
+        if self._sync is None:
+            self.account_label.configure(text="Not synced", text_color=MUTED)
+            self.account_button.configure(text="Sign in")
+            return
+        email = self.account_email
+        short = email if len(email) <= 17 else email[:16] + "…"
+        self.account_label.configure(
+            text=short if self.sync_online else "Offline · will retry",
+            text_color=MUTED if self.sync_online else ACCENT)
+        self.account_button.configure(text="Sign out")
+
+    def _poll_events(self) -> None:
+        try:
+            while True:
+                self._handle_event(*self._events.get_nowait())
+        except queue.Empty:
+            pass
+        self.after(150, self._poll_events)
+
+    def _handle_event(self, event: str, payload, source) -> None:
+        if event == "signed_in":
+            self._on_signed_in()
+        elif event == "signin_failed":
+            self._signin_cancel = None
+            self.auth_screen.idle(payload, error=bool(payload))
+        elif source is None or source is not self._sync:
+            return  # stale event from a session that has since ended
+        elif event == "remote":
+            self._apply_remote(payload)
+        elif event == "synced":
+            self.auth_screen.hide()
+        elif event == "status":
+            self.sync_online = payload == "online"
+            self._update_account()
+            if not self.sync_online:
+                self.auth_screen.hide()  # offline at launch: use the local copy
+        elif event == "auth_lost":
+            self._sign_out("Your session expired. Please sign in again.")
+
+    def _apply_remote(self, payload: dict) -> None:
+        """Adopt a copy saved by another device (this device's view settings are kept)."""
+        if self._drag_index is not None:  # don't reshuffle rows under the cursor
+            self.after(300, self._apply_remote, payload)
+            return
+        remote = storage.from_payload(payload)
+        if remote is None:
+            return
+        for day, seconds in self.data.history.items():
+            remote.history[day] = max(remote.history.get(day, 0), seconds)
+        current = self.data.board.name
+        self.data.boards = remote.boards
+        self.data.history = remote.history
+        self.data.active = next(
+            (i for i, b in enumerate(remote.boards) if b.name == current),
+            min(self.data.active, len(remote.boards) - 1))
+        if self.data_path is not None:
+            try:
+                storage.save(self.data_path, self.data)
+            except OSError:
+                LOG.warning("could not write the local cache", exc_info=True)
+        self._reset_views()
+        if self.stats_panel is not None and self.stats_panel.visible:
+            self.stats_panel.refresh()
