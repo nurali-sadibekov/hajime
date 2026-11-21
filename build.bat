@@ -19,6 +19,10 @@ rem      SIGN_PFX=C:\path\to\certificate.pfx
 rem      SIGN_PASSWORD=...
 rem ===========================================================================
 
+rem Opened by double-click? Then keep the window open at the end so the result can be read.
+set "DBLCLICK="
+echo %cmdcmdline% | find /i "/c" >nul && set "DBLCLICK=1"
+
 set "FAST="
 if /i "%~1"=="fast" set "FAST=1"
 set "CONFIG_WRITTEN="
@@ -117,6 +121,7 @@ if not defined SIGN_PFX (
     echo        Set SIGN_PFX and SIGN_PASSWORD in build.env to sign.
 )
 echo ==========================================================================
+if defined DBLCLICK pause
 endlocal
 exit /b 0
 
@@ -146,5 +151,6 @@ exit /b %errorlevel%
 if defined CONFIG_WRITTEN if exist "hajime\_bundled_config.py" del /q "hajime\_bundled_config.py"
 echo.
 echo BUILD FAILED.
+if defined DBLCLICK pause
 endlocal
 exit /b 1
