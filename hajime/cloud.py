@@ -33,6 +33,7 @@ REDIRECT_URI = f"http://127.0.0.1:{CALLBACK_PORT}/callback"
 TABLE = "user_data"
 REFRESH_MARGIN = 60  # seconds before expiry at which the token is renewed
 PUSH_DEBOUNCE = 0.6
+RETRY_SECONDS = 5
 HEARTBEAT_SECONDS = 25
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 MAX_RESPONSE_BYTES = 8_000_000  # far above the largest legitimate data row
@@ -318,8 +319,9 @@ class CloudSync:
     """Mirrors the user's data in one Supabase row and listens for remote changes.
 
     Events passed to ``emit``: ``("remote", payload)`` a newer copy from another device,
-    ``("synced", None)`` the first pull finished, ``("status", "online"|"offline")`` and
-    ``("auth_lost", None)`` when the session can no longer be renewed.
+    ``("synced", None)`` the first pull finished, ``("pushed", seq)`` a local change reached
+    the server, ``("status", "online"|"offline")`` and ``("auth_lost", None)`` when the
+    session can no longer be renewed.
     """
 
     def __init__(self, auth: SupabaseAuth, client_id: str, emit) -> None:
@@ -330,22 +332,29 @@ class CloudSync:
         self._wake = threading.Event()
         self._lock = threading.Lock()
         self._pending: dict | None = None
+        self._pending_seq = 0
+        self._seq = 0
         self._need_pull = False
         self._online: bool | None = None
 
-    def start(self, local_payload: dict) -> None:
+    def start(self, local_payload: dict, unsynced: bool = False) -> None:
+        """``unsynced``: the local copy holds changes the server has not seen yet."""
         self._pending = None
-        threading.Thread(target=self._run, args=(local_payload,), daemon=True).start()
+        threading.Thread(target=self._run, args=(local_payload, unsynced), daemon=True).start()
         _Realtime(self).start()
 
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
 
-    def push(self, payload: dict) -> None:
+    def push(self, payload: dict) -> int:
+        """Queue ``payload`` for upload; returns its sequence number (see ``pushed``)."""
         with self._lock:
-            self._pending = payload
+            self._seq += 1
+            self._pending, self._pending_seq = payload, self._seq
+            seq = self._seq
         self._wake.set()
+        return seq
 
     def request_pull(self) -> None:
         self._need_pull = True
@@ -371,17 +380,24 @@ class CloudSync:
         rows = self._rest("GET", f"?select=data&user_id=eq.{uid}")
         return rows[0]["data"] if rows else None  # type: ignore[index]
 
-    def flush(self) -> None:
-        """Stop syncing and send any unsent change right now (used when quitting)."""
+    def flush(self) -> bool:
+        """Stop syncing and send any unsent change now (used when quitting).
+
+        Returns True when nothing is left unsent.
+        """
         self._stop.set()
         self._wake.set()
         with self._lock:
             payload = self._pending
-        if payload is not None and self._online is not False:
-            try:
-                self._upsert(payload, timeout=4)
-            except CloudError:
-                pass
+        if payload is None:
+            return True
+        if self._online is False:
+            return False
+        try:
+            self._upsert(payload, timeout=4)
+        except CloudError:
+            return False
+        return True
 
     def _upsert(self, payload: dict, timeout: float = 15) -> None:
         self._rest(
@@ -413,7 +429,7 @@ class CloudSync:
         self._set_online(True)
         return True, result
 
-    def _run(self, local_payload: dict) -> None:
+    def _run(self, local_payload: dict, unsynced: bool = False) -> None:
         delay = 2.0
         while not self._stop.is_set():
             ok, remote = self._guard(self._pull)
@@ -424,11 +440,18 @@ class CloudSync:
             delay = min(delay * 2, 30)
         else:
             return
-        local, theirs = storage.from_payload(local_payload), storage.from_payload(remote)
-        if theirs is not None and (theirs.has_content or not (local and local.has_content)):
+        with self._lock:  # edits made while the first pull was still failing (offline)
+            newest = self._pending if self._pending is not None else local_payload
+            changed = unsynced or self._pending is not None
+        local, theirs = storage.from_payload(newest), storage.from_payload(remote)
+        if theirs is not None and local is not None and changed and theirs.has_content:
+            merged = storage.to_payload(storage.merge_unsynced(local, theirs))
+            self._emit("remote", merged)  # show the merged result here...
+            self.push(merged)  # ...and upload it so other devices get it too
+        elif theirs is not None and (theirs.has_content or not (local and local.has_content)):
             self._emit("remote", remote)
         else:  # nothing stored yet (or only an empty copy): upload what this device has
-            self.push(local_payload)
+            self.push(newest)
         self._emit("synced", None)
 
         while not self._stop.is_set():
@@ -444,8 +467,12 @@ class CloudSync:
                 ok, _ = self._guard(lambda p=payload: self._upsert(p))
                 if ok:
                     with self._lock:
-                        if self._pending is payload:
+                        sent = self._pending is payload
+                        if sent:
                             self._pending = None
+                        seq = self._pending_seq if sent else None
+                    if seq is not None:
+                        self._emit("pushed", seq)
                 else:
                     self._retry_later()
                     continue
@@ -463,7 +490,7 @@ class CloudSync:
 
     def _retry_later(self) -> None:
         def wake() -> None:
-            if not self._stop.wait(5):
+            if not self._stop.wait(RETRY_SECONDS):
                 self._wake.set()
         threading.Thread(target=wake, daemon=True).start()
 

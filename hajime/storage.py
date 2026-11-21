@@ -137,6 +137,20 @@ def from_payload(raw: object) -> AppData | None:
     return data
 
 
+def merge_unsynced(local: AppData, remote: AppData) -> AppData:
+    """Combine edits made while offline with the cloud copy, losing as little as possible.
+
+    This device's boards win; boards that only exist in the cloud are kept; study time
+    takes the larger value per day.
+    """
+    names = {b.name for b in local.boards}
+    boards = (local.boards + [b for b in remote.boards if b.name not in names])[:MAX_BOARDS]
+    history = dict(remote.history)
+    for day, seconds in local.history.items():
+        history[day] = max(history.get(day, 0), seconds)
+    return AppData(boards=boards, active=local.active, history=history)
+
+
 def to_payload(data: AppData) -> dict:
     return {
         "version": FORMAT_VERSION,

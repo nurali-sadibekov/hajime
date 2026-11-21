@@ -247,3 +247,71 @@ def test_callback_port_cannot_be_shared():
             probe.close()
     finally:
         first.server_close()
+
+
+def wait_until(condition, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_changes_made_offline_are_retried_until_they_arrive(server, tmp_path, monkeypatch):
+    monkeypatch.setattr(cloud._Realtime, "run", lambda self: None)
+    monkeypatch.setattr(cloud, "RETRY_SECONDS", 0.05)
+    events = queue.Queue()
+    sync = cloud.CloudSync(signed_in(server, tmp_path), "dev", lambda e, p: events.put((e, p)))
+    sync.start(storage.to_payload(storage.AppData()))
+    wait_for(events, "synced")
+
+    real_upsert, attempts = sync._upsert, []
+
+    def flaky(payload, timeout=15):
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise cloud.NetworkError("offline")
+        real_upsert(payload, timeout)
+
+    monkeypatch.setattr(sync, "_upsert", flaky)
+    edited = storage.to_payload(storage.AppData())
+    edited["boards"][0]["tasks"] = [{"title": "written offline", "done": False}]
+    seq = sync.push(edited)
+    assert wait_for(events, "pushed") == seq
+    assert len(attempts) == 3
+    saved = storage.from_payload(FakeSupabase.rows["user-1"]["data"])
+    assert saved.board.tasks[0].title == "written offline"
+    sync.stop()
+
+
+def test_unsynced_edits_are_merged_not_overwritten_after_restart(server, tmp_path, monkeypatch):
+    monkeypatch.setattr(cloud._Realtime, "run", lambda self: None)
+    phone = storage.AppData(boards=[storage.Board("Phone", [storage.Task("from phone")])],
+                            history={"2026-01-01": 100})
+    FakeSupabase.rows["user-1"] = {"data": storage.to_payload(phone), "updated_by": "x"}
+    laptop = storage.AppData(boards=[storage.Board("Tasks", [storage.Task("offline edit")])],
+                             history={"2026-01-01": 900})
+    events = queue.Queue()
+    sync = cloud.CloudSync(signed_in(server, tmp_path), "laptop", lambda e, p: events.put((e, p)))
+    sync.start(storage.to_payload(laptop), unsynced=True)
+    shown = storage.from_payload(wait_for(events, "remote"))
+    assert [b.name for b in shown.boards] == ["Tasks", "Phone"]
+    assert wait_until(lambda: FakeSupabase.rows["user-1"]["updated_by"] == "laptop")
+    stored = storage.from_payload(FakeSupabase.rows["user-1"]["data"])
+    assert [b.name for b in stored.boards] == ["Tasks", "Phone"]
+    assert stored.boards[0].tasks[0].title == "offline edit"
+    assert stored.history == {"2026-01-01": 900}
+    sync.stop()
+
+
+def test_without_unsynced_edits_the_cloud_copy_wins(server, tmp_path, monkeypatch):
+    monkeypatch.setattr(cloud._Realtime, "run", lambda self: None)
+    phone = storage.AppData(boards=[storage.Board("Phone", [storage.Task("from phone")])])
+    FakeSupabase.rows["user-1"] = {"data": storage.to_payload(phone), "updated_by": "x"}
+    events = queue.Queue()
+    sync = cloud.CloudSync(signed_in(server, tmp_path), "laptop", lambda e, p: events.put((e, p)))
+    sync.start(storage.to_payload(storage.AppData(boards=[storage.Board("Old", [])])))
+    shown = storage.from_payload(wait_for(events, "remote"))
+    assert [b.name for b in shown.boards] == ["Phone"]
+    sync.stop()

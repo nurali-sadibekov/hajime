@@ -88,6 +88,7 @@ class HajimeApp(ctk.CTk):
         self.client_id = secrets.token_hex(8)
         self.account_email = ""
         self.sync_online = True
+        self._queued_seq = 0  # newest change handed to the uploader
         self.timer = Pomodoro(WORK_SECONDS, BREAK_SECONDS)
         self._timer_job: str | None = None
         self.stats_panel: StatsPanel | None = None
@@ -616,16 +617,32 @@ class HajimeApp(ctk.CTk):
         except OSError as error:
             self.title(f"Hajime · could not save ({error.strerror or 'I/O error'})")
         if self._sync is not None and upload:
-            self._sync.push(storage.to_payload(self.data))
+            self._mark_unsynced(True)  # survives a restart until the server has the change
+            self._queued_seq = self._sync.push(storage.to_payload(self.data))
         if self.stats_panel is not None and self.stats_panel.visible:
             self.stats_panel.refresh()
 
     def _on_close(self) -> None:
         self._credit(self.timer.pause())
         self._save()
-        if self._sync is not None:
-            self._sync.flush()
+        if self._sync is not None and self._sync.flush():
+            self._mark_unsynced(False)
         self.destroy()
+
+    def _unsynced_marker(self) -> Path | None:
+        return None if self.data_path is None else self.data_path.with_suffix(".unsynced")
+
+    def _mark_unsynced(self, unsynced: bool) -> None:
+        marker = self._unsynced_marker()
+        if marker is None:
+            return
+        try:
+            if unsynced:
+                marker.touch()
+            else:
+                marker.unlink(missing_ok=True)
+        except OSError:
+            LOG.warning("could not update the unsynced marker", exc_info=True)
 
     # ----- account & sync -------------------------------------------------
     def _show_auth(self) -> None:
@@ -736,7 +753,8 @@ class HajimeApp(ctk.CTk):
                 legacy.replace(legacy.with_name(legacy.name + ".imported"))
         except OSError:
             LOG.warning("could not write the local cache", exc_info=True)
-        sync.start(storage.to_payload(self.data))
+        marker = self._unsynced_marker()
+        sync.start(storage.to_payload(self.data), unsynced=bool(marker and marker.exists()))
         if had_cache:
             self.auth_screen.hide()
         else:  # nothing local to show yet: wait for the first pull
@@ -753,7 +771,8 @@ class HajimeApp(ctk.CTk):
         self._cancel_timer_job()
         if self._sync is not None:
             self._save()
-            self._sync.flush()
+            if self._sync.flush():
+                self._mark_unsynced(False)
             self._sync = None
         if self.mini is not None and self.mini.visible:
             self.mini.hide()
@@ -801,6 +820,9 @@ class HajimeApp(ctk.CTk):
             self._apply_remote(payload)
         elif event == "synced":
             self.auth_screen.hide()
+        elif event == "pushed":
+            if payload >= self._queued_seq:  # nothing newer is still waiting
+                self._mark_unsynced(False)
         elif event == "status":
             self.sync_online = payload == "online"
             self._update_account()
