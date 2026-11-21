@@ -26,6 +26,9 @@ class BeltIllustrations:
         if self._draw_svg(asset):
             return
         self._draw_native(BELTS[rank][1], BELTS[rank][2])
+        scale = self.canvas.winfo_reqwidth() / 150  # native art is authored at 150x58
+        if abs(scale - 1) > 0.01:
+            self.canvas.scale("all", 0, 0, scale, scale)
 
     def _draw_svg(self, asset: Path) -> bool:
         if not asset.is_file():
@@ -33,9 +36,10 @@ class BeltIllustrations:
         try:
             import cairosvg
 
-            png = cairosvg.svg2png(url=str(asset), output_width=150, output_height=58)
+            width, height = self.canvas.winfo_reqwidth(), self.canvas.winfo_reqheight()
+            png = cairosvg.svg2png(url=str(asset), output_width=width, output_height=height)
             self._photo = tk.PhotoImage(data=base64.b64encode(png).decode("ascii"), format="png")
-            self.canvas.create_image(75, 29, image=self._photo)
+            self.canvas.create_image(width / 2, height / 2, image=self._photo)
             return True
         except Exception:  # noqa: BLE001 - CairoSVG/Tk failures vary widely
             # Missing Cairo libraries, bad SVGs or old Tk builds all land here;

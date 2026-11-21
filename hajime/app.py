@@ -35,11 +35,13 @@ from .config import (
     TRACK,
     WORK_SECONDS,
 )
-from .models import BREAK, WORK, Board, Pomodoro, Task, belt_rank, completion
-from .stats_window import StatsWindow
+from .models import BREAK, WORK, Board, Pomodoro, Task, belt_rank, completion, next_belt_goal
+from .mini_timer import MiniTimer
+from .sound import play_ringtone
+from .stats_window import StatsPanel
 
-WINDOW_SIZE = (640, 480)  # 4:3
-SIDEBAR_WIDTH = 196
+WINDOW_SIZE = (700, 525)  # 4:3
+SIDEBAR_WIDTH = 210
 TASK_WRAP = 280
 LOG = logging.getLogger("hajime")
 DRAG_THRESHOLD_PX = 6
@@ -73,7 +75,8 @@ class HajimeApp(ctk.CTk):
         self.data = storage.load(self.data_path)
         self.timer = Pomodoro(WORK_SECONDS, BREAK_SECONDS)
         self._timer_job: str | None = None
-        self.stats_window: StatsWindow | None = None
+        self.stats_panel: StatsPanel | None = None
+        self.mini: MiniTimer | None = None
         self._last_save = time.monotonic()
         self._editing: int | None = None  # task being edited
         self._board_edit: int | None = None  # board index being renamed, or NEW_BOARD
@@ -139,13 +142,18 @@ class HajimeApp(ctk.CTk):
         buttons = ctk.CTkFrame(timer, fg_color="transparent")
         buttons.pack(padx=12, pady=(2, 0))
         self.timer_button = ctk.CTkButton(
-            buttons, text="Start", width=92, height=32, corner_radius=9, font=f["button"],
+            buttons, text="Start", width=76, height=32, corner_radius=9, font=f["button"],
             fg_color=INK, hover_color=INK_HOVER, command=self.toggle_timer)
         self.timer_button.pack(side="left")
         ctk.CTkButton(
-            buttons, text="Reset", width=56, height=32, corner_radius=9, font=f["button"],
+            buttons, text="Reset", width=50, height=32, corner_radius=9, font=f["button"],
             fg_color="transparent", text_color=MUTED, hover_color=TRACK,
             command=self.reset_timer).pack(side="left", padx=(4, 0))
+        self.float_button = ctk.CTkButton(
+            buttons, text="⧉", width=32, height=32, corner_radius=9, font=f["icon"],
+            fg_color="transparent", text_color=MUTED, hover_color=TRACK,
+            command=self.toggle_mini)
+        self.float_button.pack(side="left", padx=(4, 0))
         self.focus_label = ctk.CTkLabel(timer, text="", text_color=MUTED, font=f["small"])
         self.focus_label.pack(pady=(2, 8))
 
@@ -176,7 +184,15 @@ class HajimeApp(ctk.CTk):
         self.progress = ctk.CTkProgressBar(card, height=7, fg_color=TRACK, progress_color=ACCENT)
         self.progress.pack(fill="x", padx=18, pady=(8, 4))
         self.percent_label = ctk.CTkLabel(card, text="", text_color=MUTED, font=f["small"])
-        self.percent_label.pack(anchor="w", padx=18, pady=(0, 10))
+        self.percent_label.pack(anchor="w", padx=18, pady=(0, 0))
+        goal_row = ctk.CTkFrame(card, fg_color="transparent")
+        goal_row.pack(fill="x", padx=18, pady=(0, 10))
+        self.goal_label = ctk.CTkLabel(goal_row, text="", text_color=ACCENT, font=f["small"])
+        self.goal_label.pack(side="left")
+        self.goal_canvas = tk.Canvas(goal_row, width=60, height=23, bg=PANEL,
+                                     highlightthickness=0)
+        self.goal_canvas.pack(side="left", padx=(8, 0))
+        self.goal_art = BeltIllustrations(self.goal_canvas)
 
         add = _card(main, fill="x", pady=(0, 10))
         self.entry = ctk.CTkEntry(
@@ -411,7 +427,8 @@ class HajimeApp(ctk.CTk):
         self._credit(earned)
         if finished:
             self._save()
-            self.bell()
+            if not play_ringtone():
+                self.bell()
         elif earned and time.monotonic() - self._last_save >= SAVE_INTERVAL_SECONDS:
             self._save()
         self._draw_timer()
@@ -422,12 +439,23 @@ class HajimeApp(ctk.CTk):
         self.data.add_focus(seconds)
 
     def show_stats(self) -> None:
-        if self.stats_window is not None and self.stats_window.winfo_exists():
-            self.stats_window.refresh()
-            self.stats_window.lift()
-            self.stats_window.focus()
-            return
-        self.stats_window = StatsWindow(self)
+        if self.stats_panel is None:
+            self.stats_panel = StatsPanel(self)
+        self.stats_panel.show()
+
+    def toggle_mini(self) -> None:
+        """Show or hide the always-on-top floating timer."""
+        if self.mini is None:
+            self.mini = MiniTimer(self)
+        if self.mini.visible:
+            self.mini.hide()
+        else:
+            self.mini.show()
+            self.float_button.configure(text_color=ACCENT)
+            self._draw_timer()
+
+    def on_mini_hidden(self) -> None:
+        self.float_button.configure(text_color=MUTED)
 
     def _draw_timer(self) -> None:
         minutes, seconds = divmod(self.timer.remaining, 60)
@@ -437,6 +465,8 @@ class HajimeApp(ctk.CTk):
         self.mode_switch.set(MODE_LABELS[self.timer.mode])
         self.timer_button.configure(text="Pause" if self.timer.running else "Start")
         self.title(f"{clock} · Hajime" if self.timer.running else "Hajime")
+        if self.mini is not None:
+            self.mini.update_state(clock, self.timer.running, self.timer.mode == BREAK)
         hours, rest = divmod(self.data.focus_seconds, 3600)
         self.focus_label.configure(
             text=f"{hours}h {rest // 60}m today" if hours else f"{rest // 60}m today")
@@ -454,6 +484,16 @@ class HajimeApp(ctk.CTk):
         done = sum(t.done for t in tasks)
         self.percent_label.configure(
             text=f"{done}/{len(tasks)} done" if tasks else "No tasks yet")
+
+        goal = next_belt_goal(tasks)
+        if goal is None:
+            self.goal_label.configure(text="Top belt reached. Osu!")
+            self.goal_canvas.delete("all")
+        else:
+            belt, left = goal
+            self.goal_label.configure(
+                text=f"Next: {BELTS[belt][0]} belt · {left} more task{'s' * (left != 1)} to go")
+            self.goal_art.draw(belt)
 
         for child in self.task_list.winfo_children():
             child.destroy()
@@ -512,8 +552,8 @@ class HajimeApp(ctk.CTk):
             storage.save(self.data_path, self.data)
         except OSError as error:
             self.title(f"Hajime · could not save ({error.strerror or 'I/O error'})")
-        if self.stats_window is not None and self.stats_window.winfo_exists():
-            self.stats_window.refresh()
+        if self.stats_panel is not None and self.stats_panel.visible:
+            self.stats_panel.refresh()
 
     def _on_close(self) -> None:
         self._credit(self.timer.pause())

@@ -1,5 +1,6 @@
 """GUI smoke tests; skipped automatically when no display is available."""
 
+import time
 import tkinter as tk
 
 import pytest
@@ -71,13 +72,36 @@ def test_long_titles_are_truncated(app):
     assert len(app.tasks[0].title) == 200
 
 
-def test_stats_window_opens_and_follows_history(app):
+def test_stats_panel_overlays_and_follows_history(app):
     app.data.history["2025-06-01"] = 3600
     app.show_stats()
     app.update()
-    window = app.stats_window
-    assert window.year == 2026 and window.prev_button.cget("state") == "normal"
-    window.set_year(2025)
-    assert window.total_label.cget("text").startswith("1h 0m")
-    app.show_stats()  # reuses the open window
-    assert app.stats_window is window
+    panel = app.stats_panel
+    assert panel.visible
+    assert panel.year == 2026 and panel.prev_button.cget("state") == "normal"
+    panel.set_year(2025)
+    assert panel.total_label.cget("text").startswith("1h 0m")
+    app.show_stats()  # reuses the same panel
+    assert app.stats_panel is panel
+    panel.hide()
+    assert not panel.visible
+
+
+def test_floating_timer_is_topmost_and_synced(app):
+    app.toggle_mini()
+    for _ in range(30):  # CTkToplevel finishes its own setup via after() callbacks
+        app.update()
+        time.sleep(0.01)
+    assert app.mini.visible and app.mini.attributes("-topmost")
+    app.toggle_timer()
+    assert app.mini.button.cget("text") == "Pause"
+    app.toggle_mini()
+    assert not app.mini.visible
+
+
+def test_ringtone_is_valid_wav():
+    import io, wave
+    from hajime.sound import build_ringtone
+
+    with wave.open(io.BytesIO(build_ringtone())) as wav:
+        assert wav.getnframes() > 0

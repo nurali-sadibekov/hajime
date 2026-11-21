@@ -36,6 +36,19 @@ def belt_rank(fraction: float) -> int:
     return min(int(max(0.0, fraction) * (len(BELTS) - 1)), len(BELTS) - 2)
 
 
+def next_belt_goal(tasks: list[Task]) -> tuple[int, int] | None:
+    """Return ``(next_belt_index, tasks_still_to_finish)``; ``None`` at the top belt."""
+    total = len(tasks)
+    done = sum(t.done for t in tasks)
+    rank = belt_rank(completion(tasks))
+    if rank >= len(BELTS) - 1:
+        return None
+    if total == 0:
+        return rank + 1, 1
+    needed = next(d for d in range(done, total + 1) if belt_rank(d / total) > rank)
+    return belt_rank(needed / total), needed - done  # may skip belts on short lists
+
+
 WORK, BREAK = "work", "break"
 
 

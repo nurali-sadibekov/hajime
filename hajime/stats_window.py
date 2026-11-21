@@ -1,4 +1,4 @@
-"""Study-activity window: a GitHub-style contribution heatmap per year."""
+"""Study-activity overlay: a GitHub-style contribution heatmap per year."""
 
 from __future__ import annotations
 
@@ -11,28 +11,27 @@ import customtkinter as ctk
 from . import stats
 from .config import ACCENT, BG, FAINT, HEAT_COLORS, INK, LINE, MUTED, PANEL, TRACK
 
-CELL, GAP = 11, 3
+CELL, GAP = 9, 2
 STEP = CELL + GAP
-LEFT, TOP = 32, 20
+LEFT, TOP = 28, 20
 DAY_LABELS = {0: "Mon", 2: "Wed", 4: "Fri"}
 MONTH_BAR_H = 60
 
 
-class StatsWindow(ctk.CTkToplevel):
+class StatsPanel(ctk.CTkFrame):
+    """Fills the main window while open, like an overlay menu."""
+
     def __init__(self, app) -> None:
-        super().__init__(app, fg_color=BG)
+        super().__init__(app, fg_color=BG, corner_radius=0)
         self.app = app
         self.year = date.today().year
-        self.title("Hajime · Activity")
-        self.resizable(False, False)
         self.fonts = app.fonts
-
-        width = LEFT + 53 * STEP + 24
-        self.geometry(f"{width + 32}x470")
+        self.bind("<Escape>", lambda _e: self.hide())
 
         card = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=14, border_width=1,
                             border_color=LINE)
         card.pack(fill="both", expand=True, padx=16, pady=16)
+        card.bind("<Button-1>", lambda _e: self.focus_set())
 
         header = ctk.CTkFrame(card, fg_color="transparent")
         header.pack(fill="x", padx=18, pady=(14, 0))
@@ -42,7 +41,11 @@ class StatsWindow(ctk.CTkToplevel):
         self.year_label.pack(side="left")
         self.next_button = self._nav(header, "›", 1)
         self.total_label = ctk.CTkLabel(header, text="", text_color=MUTED, font=self.fonts["body"])
-        self.total_label.pack(side="right")
+        self.total_label.pack(side="right", padx=(0, 8))
+        ctk.CTkButton(
+            header, text="×", width=28, height=28, corner_radius=8, font=self.fonts["icon"],
+            fg_color="transparent", text_color=MUTED, hover_color=TRACK,
+            command=self.hide).pack(side="right")
 
         self.heat = tk.Canvas(card, width=LEFT + 53 * STEP, height=TOP + 7 * STEP,
                               bg=PANEL, highlightthickness=0)
@@ -70,6 +73,19 @@ class StatsWindow(ctk.CTkToplevel):
                                 bg=PANEL, highlightthickness=0)
         self.months.pack(padx=18, pady=(0, 10), anchor="w")
         self.refresh()
+
+    def show(self) -> None:
+        self.refresh()
+        self.place(x=0, y=0, relwidth=1, relheight=1)
+        self.lift()
+        self.focus_set()
+
+    def hide(self) -> None:
+        self.place_forget()
+
+    @property
+    def visible(self) -> bool:
+        return bool(self.winfo_manager())
 
     def _nav(self, master: tk.Misc, text: str, step: int) -> ctk.CTkButton:
         button = ctk.CTkButton(

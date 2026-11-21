@@ -76,3 +76,23 @@ def test_switch_rejects_unknown_mode():
 
     with pytest.raises(ValueError):
         Pomodoro(10, 3).switch("nap")
+
+
+def test_next_belt_goal():
+    from hajime.models import Task, next_belt_goal
+
+    assert next_belt_goal([]) == (1, 1)
+    tasks = [Task(str(i)) for i in range(6)]
+    assert next_belt_goal(tasks) == (1, 1)  # 1/6 reaches yellow
+    for t in tasks[:5]:
+        t.done = True
+    assert next_belt_goal(tasks) == (6, 1)  # only 100% earns black
+    tasks[5].done = True
+    assert next_belt_goal(tasks) is None
+
+
+def test_next_belt_goal_names_belt_actually_earned():
+    from hajime.models import Task, next_belt_goal
+
+    tasks = [Task("a", True), Task("b", True), Task("c")]  # 2/3 = blue
+    assert next_belt_goal(tasks) == (6, 1)  # finishing jumps straight to black
