@@ -17,9 +17,17 @@ class BeltIllustrations:
     def __init__(self, canvas: tk.Canvas, asset_dir: Path = BELT_ASSET_DIR):
         self.canvas = canvas
         self.asset_dir = asset_dir
+        self._rank: int | None = None
         self._photo = None  # Keep a live reference; Tk images are otherwise collected.
 
+    def clear(self) -> None:
+        self.canvas.delete("all")
+        self._rank = None
+
     def draw(self, rank: int) -> None:
+        if rank == self._rank:  # already showing this belt; redrawing would flicker
+            return
+        self._rank = rank
         self.canvas.delete("all")
         self._photo = None
         asset = self.asset_dir / f"{BELTS[rank][0].lower()}.svg"

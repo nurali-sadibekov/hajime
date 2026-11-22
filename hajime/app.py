@@ -28,7 +28,6 @@ from .config import (
     BREAK_SECONDS,
     FAINT,
     FONT_CANDIDATES,
-    HOVER_ROW,
     INK,
     INK_HOVER,
     LINE,
@@ -42,8 +41,11 @@ from .config import (
     TRACK,
     WORK_SECONDS,
 )
+from .goals_window import GoalsPanel
+from .icons import icon
 from .mini_timer import MiniTimer
 from .models import BREAK, WORK, Board, Pomodoro, Task, belt_rank, completion, next_belt_goal
+from .row_list import RowList
 from .sound import play_ringtone
 from .stats_window import StatsPanel
 
@@ -92,6 +94,7 @@ class HajimeApp(ctk.CTk):
         self.timer = Pomodoro(WORK_SECONDS, BREAK_SECONDS)
         self._timer_job: str | None = None
         self.stats_panel: StatsPanel | None = None
+        self.goals_panel: GoalsPanel | None = None
         self.mini: MiniTimer | None = None
         self._last_save = time.monotonic()
         self._editing: int | None = None  # task being edited
@@ -100,7 +103,6 @@ class HajimeApp(ctk.CTk):
         self._drag_origin_y = 0
         self._drag_moved = False
         self._drag_bindings: tuple[str, str] = ("", "")
-        self._rows: list[ctk.CTkFrame] = []
         self._board_buttons: list[tuple[int, ctk.CTkButton]] = []
 
         self.title("Hajime")
@@ -147,9 +149,15 @@ class HajimeApp(ctk.CTk):
         ctk.CTkLabel(brand, text="Hajime", text_color=INK, font=f["brand"]).pack(
             side="left", padx=6)
         ctk.CTkButton(
-            brand, text="▦  Activity", width=84, height=26, corner_radius=8, font=f["small"],
+            brand, text="", image=icon("activity", MUTED, 16), width=30, height=30,
+            corner_radius=8,
             fg_color="transparent", text_color=MUTED, hover_color=TRACK,
-            command=self.show_stats).pack(side="right")
+            command=self.show_stats).pack(side="right", padx=(2, 0))
+        ctk.CTkButton(
+            brand, text="", image=icon("goals", MUTED, 16), width=30, height=30,
+            corner_radius=8,
+            fg_color="transparent", text_color=MUTED, hover_color=TRACK,
+            command=self.show_goals).pack(side="right")
         if self._cloud_mode:
             account = ctk.CTkFrame(side, fg_color="transparent")
             account.pack(side="bottom", fill="x", pady=(6, 0))
@@ -181,7 +189,8 @@ class HajimeApp(ctk.CTk):
             fg_color="transparent", text_color=MUTED, hover_color=TRACK,
             command=self.reset_timer).pack(side="left", padx=(4, 0))
         self.float_button = ctk.CTkButton(
-            buttons, text="⧉", width=32, height=32, corner_radius=9, font=f["icon"],
+            buttons, text="", image=icon("pip", MUTED, 16), width=32, height=32,
+            corner_radius=9,
             fg_color="transparent", text_color=MUTED, hover_color=TRACK,
             command=self.toggle_mini)
         self.float_button.pack(side="left", padx=(4, 0))
@@ -189,7 +198,8 @@ class HajimeApp(ctk.CTk):
         self.focus_label.pack(pady=(2, 8))
 
         ctk.CTkButton(
-            side, text="+  Board", height=32, corner_radius=9, font=f["button"], anchor="w",
+            side, text=" Board", image=icon("plus", MUTED, 14), compound="left", height=32,
+            corner_radius=9, font=f["button"], anchor="w",
             fg_color="transparent", text_color=MUTED, hover_color=TRACK,
             command=self._start_new_board).pack(side="bottom", fill="x", pady=(6, 0))
         self.board_list = ctk.CTkScrollableFrame(
@@ -232,14 +242,17 @@ class HajimeApp(ctk.CTk):
         self.entry.pack(side="left", fill="x", expand=True, padx=(8, 4), pady=3)
         self.entry.bind("<Return>", lambda _e: self.add_task())
         ctk.CTkButton(
-            add, text="+", width=32, height=32, corner_radius=9, font=f["icon"],
-            fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.add_task,
+            add, text="", image=icon("plus", "#FFFFFF", 16), width=32, height=32,
+            corner_radius=9, fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.add_task,
         ).pack(side="right", padx=(0, 6))
 
         self.task_list = ctk.CTkScrollableFrame(
             main, fg_color=PANEL, corner_radius=14, border_width=1, border_color=LINE,
             scrollbar_button_color=LINE, scrollbar_button_hover_color=FAINT)
         self.task_list.pack(fill="both", expand=True)
+        self.row_list = RowList(
+            self.task_list, f, TASK_WRAP, on_toggle=self.toggle_task, on_delete=self.delete_task,
+            on_press=self._drag_start, on_edit_end=self._end_edit)
 
     # ----- boards ---------------------------------------------------------
     def refresh_boards(self) -> None:
@@ -426,7 +439,7 @@ class HajimeApp(ctk.CTk):
             return
         self._drag_moved = True
         target = next(
-            (i for i, row in enumerate(self._rows)
+            (i for i, row in enumerate(self.row_list.frames)
              if row.winfo_rooty() <= event.y_root < row.winfo_rooty() + row.winfo_height()),
             None,
         )
@@ -503,7 +516,16 @@ class HajimeApp(ctk.CTk):
     def show_stats(self) -> None:
         if self.stats_panel is None:
             self.stats_panel = StatsPanel(self)
+        if self.goals_panel is not None:
+            self.goals_panel.hide()
         self.stats_panel.show()
+
+    def show_goals(self) -> None:
+        if self.goals_panel is None:
+            self.goals_panel = GoalsPanel(self)
+        if self.stats_panel is not None:
+            self.stats_panel.hide()
+        self.goals_panel.show()
 
     def toggle_mini(self) -> None:
         """Show or hide the always-on-top floating timer."""
@@ -550,57 +572,14 @@ class HajimeApp(ctk.CTk):
         goal = next_belt_goal(tasks)
         if goal is None:
             self.goal_label.configure(text="Top belt reached. Osu!")
-            self.goal_canvas.delete("all")
+            self.goal_art.clear()
         else:
             belt, left = goal
             self.goal_label.configure(
                 text=f"Next: {BELTS[belt][0]} belt · {left} more task{'s' * (left != 1)} to go")
             self.goal_art.draw(belt)
 
-        for child in self.task_list.winfo_children():
-            child.destroy()
-        self._rows = [self._build_row(i, t) for i, t in enumerate(tasks)]
-
-    def _build_row(self, index: int, task: Task) -> ctk.CTkFrame:
-        dragging = index == self._drag_index and self._drag_moved
-        row = ctk.CTkFrame(self.task_list, corner_radius=9,
-                           fg_color=HOVER_ROW if dragging else "transparent")
-        row.pack(fill="x", padx=2, pady=1)
-
-        box = ctk.CTkCheckBox(
-            row, text="", width=22, checkbox_width=20, checkbox_height=20, corner_radius=6,
-            border_width=2, fg_color=ACCENT, hover_color=ACCENT, border_color="#BDBCB5",
-            checkmark_color="white",
-            command=lambda i=index: self.after_idle(self.toggle_task, i))
-        box.pack(side="left", padx=(8, 2), pady=7)
-        if task.done:
-            box.select()
-
-        if self._editing == index:
-            edit = ctk.CTkEntry(row, font=self.fonts["body"], height=28, border_width=1,
-                                border_color=LINE, fg_color=PANEL, text_color=INK)
-            edit.insert(0, task.title)
-            edit.pack(side="left", fill="x", expand=True, padx=(0, 6))
-            edit.bind("<Return>", lambda _e, i=index, w=edit: self._end_edit(i, w, True))
-            edit.bind("<Escape>", lambda _e, i=index, w=edit: self._end_edit(i, w, False))
-            edit.bind("<FocusOut>", lambda _e, i=index, w=edit: self._end_edit(i, w, True))
-            edit.focus_set()
-            edit.select_range(0, "end")
-        else:
-            label = ctk.CTkLabel(
-                row, text=task.title, anchor="w", justify="left", wraplength=TASK_WRAP,
-                text_color=FAINT if task.done else INK,
-                font=self.fonts["done" if task.done else "body"], cursor="hand2")
-            label.pack(side="left", fill="x", expand=True, padx=(0, 4))
-            label.bind("<ButtonPress-1>", lambda e, i=index: self._drag_start(e, i))
-
-        remove = ctk.CTkLabel(row, text="×", width=26, text_color=FAINT, font=self.fonts["icon"],
-                              cursor="hand2")
-        remove.pack(side="right", padx=(0, 4))
-        remove.bind("<Enter>", lambda _e, w=remove: w.configure(text_color=ACCENT))
-        remove.bind("<Leave>", lambda _e, w=remove: w.configure(text_color=FAINT))
-        remove.bind("<Button-1>", lambda _e, i=index: self.after_idle(self.delete_task, i))
-        return row
+        self.row_list.sync(tasks, self._editing, self._drag_index if self._drag_moved else None)
 
     # ----- persistence / lifecycle ---------------------------------------
     def report_callback_exception(self, exc, val, tb) -> None:
@@ -717,6 +696,8 @@ class HajimeApp(ctk.CTk):
         self.refresh_boards()
         self.refresh()
         self._draw_timer()
+        if self.goals_panel is not None and self.goals_panel.visible:
+            self.goals_panel.refresh()
 
     def _on_signed_in(self) -> None:
         session = self._auth.session if self._auth else None
@@ -833,7 +814,9 @@ class HajimeApp(ctk.CTk):
 
     def _apply_remote(self, payload: dict) -> None:
         """Adopt a copy saved by another device (this device's view settings are kept)."""
-        if self._drag_index is not None:  # don't reshuffle rows under the cursor
+        goals = self.goals_panel
+        if self._drag_index is not None or (goals is not None and goals.drag_index is not None):
+            # don't reshuffle rows under the cursor
             self.after(300, self._apply_remote, payload)
             return
         remote = storage.from_payload(payload)
@@ -844,6 +827,7 @@ class HajimeApp(ctk.CTk):
         current = self.data.board.name
         self.data.boards = remote.boards
         self.data.history = remote.history
+        self.data.goals = remote.goals
         self.data.active = next(
             (i for i, b in enumerate(remote.boards) if b.name == current),
             min(self.data.active, len(remote.boards) - 1))

@@ -17,6 +17,15 @@ class Task:
 
 
 @dataclass
+class Goal:
+    """A yearly goal; independent of boards and belts."""
+
+    title: str
+    year: int
+    done: bool = False
+
+
+@dataclass
 class Board:
     """A named, independent to-do list with its own belt progress."""
 

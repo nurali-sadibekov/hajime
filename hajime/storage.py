@@ -6,19 +6,22 @@ import json
 import os
 import shutil
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 
 from .config import (
     MAX_BOARD_NAME,
     MAX_BOARDS,
+    MAX_GOAL_YEAR,
+    MAX_GOALS_PER_YEAR,
     MAX_HISTORY_DAYS,
     MAX_TASK_TITLE,
     MAX_TASKS_PER_BOARD,
+    MIN_GOAL_YEAR,
     SECONDS_PER_DAY,
 )
-from .models import Board, Task
+from .models import Board, Goal, Task
 
 APP_DIR_NAME = "Hajime"
 FILE_NAME = "tasks.json"
@@ -49,6 +52,7 @@ class AppData:
     boards: list[Board] = field(default_factory=list)
     active: int = 0
     history: dict[str, int] = field(default_factory=dict)  # ISO date -> studied seconds
+    goals: list[Goal] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.boards:
@@ -57,7 +61,7 @@ class AppData:
 
     @property
     def has_content(self) -> bool:
-        return bool(self.history) or any(b.tasks for b in self.boards)
+        return bool(self.history) or bool(self.goals) or any(b.tasks for b in self.boards)
 
     @property
     def board(self) -> Board:
@@ -102,6 +106,28 @@ def _parse_tasks(values: object) -> list[Task]:
     return tasks
 
 
+def _parse_goals(values: object) -> list[Goal]:
+    if not isinstance(values, list):
+        return []
+    goals: list[Goal] = []
+    per_year: dict[int, int] = {}
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        title = str(value.get("title", "")).strip()[:MAX_TASK_TITLE]
+        try:
+            year = int(value.get("year"))
+        except (TypeError, ValueError):
+            continue
+        if not title or not MIN_GOAL_YEAR <= year <= MAX_GOAL_YEAR:
+            continue
+        if per_year.get(year, 0) >= MAX_GOALS_PER_YEAR:
+            continue
+        per_year[year] = per_year.get(year, 0) + 1
+        goals.append(Goal(title, year, bool(value.get("done", False))))
+    return goals
+
+
 def _parse_boards(values: object) -> list[Board]:
     if not isinstance(values, list):
         return []
@@ -127,7 +153,8 @@ def from_payload(raw: object) -> AppData | None:
         active = int(raw.get("active", 0))
     except (TypeError, ValueError):
         active = 0
-    data = AppData(boards=boards, active=active, history=_parse_history(raw.get("history")))
+    data = AppData(boards=boards, active=active, history=_parse_history(raw.get("history")),
+                   goals=_parse_goals(raw.get("goals")))
 
     study = raw.get("study")  # pre-heatmap format: only the latest day was kept
     if isinstance(study, dict):
@@ -148,7 +175,10 @@ def merge_unsynced(local: AppData, remote: AppData) -> AppData:
     history = dict(remote.history)
     for day, seconds in local.history.items():
         history[day] = max(history.get(day, 0), seconds)
-    return AppData(boards=boards, active=local.active, history=history)
+    seen = {(g.year, g.title) for g in local.goals}
+    goals = local.goals + [g for g in remote.goals if (g.year, g.title) not in seen]
+    return AppData(boards=boards, active=local.active, history=history,
+                   goals=_parse_goals([asdict(g) for g in goals]))
 
 
 def to_payload(data: AppData) -> dict:
@@ -160,6 +190,7 @@ def to_payload(data: AppData) -> dict:
             for b in data.boards
         ],
         "history": dict(sorted(data.history.items())),
+        "goals": [asdict(g) for g in data.goals],
     }
 
 

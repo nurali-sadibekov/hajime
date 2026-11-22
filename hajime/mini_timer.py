@@ -5,6 +5,7 @@ from __future__ import annotations
 import customtkinter as ctk
 
 from .config import ACCENT_BREAK, INK, INK_HOVER, LINE, MUTED, PANEL, TRACK
+from .icons import icon
 
 
 class MiniTimer(ctk.CTkToplevel):
@@ -28,7 +29,7 @@ class MiniTimer(ctk.CTkToplevel):
             command=app.toggle_timer)
         self.button.pack(side="left", pady=8)
         close = ctk.CTkButton(
-            frame, text="×", width=26, height=26, corner_radius=8, font=app.fonts["icon"],
+            frame, text="", image=icon("close", MUTED, 12), width=26, height=26, corner_radius=8,
             fg_color="transparent", text_color=MUTED, hover_color=TRACK, command=self.hide)
         close.pack(side="left", padx=(4, 8), pady=8)
 

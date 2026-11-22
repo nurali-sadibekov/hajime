@@ -137,3 +137,62 @@ def test_signed_out_app_never_writes_placeholder_data(tmp_path, monkeypatch):
     instance._on_close()
     kept = storage.load(tmp_path / "tasks.json")
     assert [t.title for t in kept.board.tasks] == ["real"]
+
+
+def test_goals_panel_behaves_like_tasks(app, tmp_path):
+    app.show_goals()
+    panel = app.goals_panel
+    for title in ("a", "b", "c"):
+        panel.entry.insert(0, title)
+        panel.add_goal()
+    panel.set_year(panel.year + 1)
+    panel.entry.insert(0, "next year")
+    panel.add_goal()
+    panel.set_year(panel.year - 1)
+    app.update()
+
+    # rename (click -> edit -> Return)
+    panel._begin_edit(0)
+    app.update()
+    entry = panel.rows.frames[0].winfo_children()[1]
+    entry.delete(0, "end")
+    entry.insert(0, "renamed")
+    panel._end_edit(0, entry, True)
+    app.update()
+
+    # reorder (drag the first goal onto the last row)
+    panel.drag_index, panel._drag_moved = 0, True
+    goals = panel._year_goals()
+    goals.insert(2, goals.pop(0))
+    panel._reorder(goals)
+    panel.drag_index = None
+    panel._changed()
+
+    panel.toggle(0)
+    assert [g.title for g in panel._year_goals()] == ["b", "c", "renamed"]
+    assert panel._year_goals()[0].done
+    saved = storage.load(tmp_path / "tasks.json")
+    assert [g.title for g in saved.goals if g.year == panel.year] == ["b", "c", "renamed"]
+    assert len(saved.goals) == 4
+
+    panel.delete(1)
+    assert [g.title for g in panel._year_goals()] == ["b", "renamed"]
+
+
+def test_toggle_and_reorder_reuse_row_widgets(app):
+    """Rows are updated in place (no destroy/rebuild), which is what avoids flicker."""
+    for title in ("one", "two", "three"):
+        app.entry.insert(0, title)
+        app.add_task()
+    app.update()
+    frames = list(app.row_list.frames)
+
+    app.toggle_task(1)
+    app.tasks.insert(0, app.tasks.pop(2))  # what a drag step does
+    app.refresh()
+    app.update()
+
+    assert app.row_list.frames == frames
+    labels = [r.label.cget("text") for r in app.row_list.rows]
+    assert labels == ["three", "one", "two"]
+    assert [bool(r.box.get()) for r in app.row_list.rows] == [False, False, True]

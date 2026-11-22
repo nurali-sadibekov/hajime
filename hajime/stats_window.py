@@ -10,6 +10,7 @@ import customtkinter as ctk
 
 from . import stats
 from .config import ACCENT, BG, FAINT, HEAT_COLORS, INK, LINE, MUTED, PANEL, TRACK
+from .icons import icon
 
 CELL, GAP = 9, 2
 STEP = CELL + GAP
@@ -35,17 +36,17 @@ class StatsPanel(ctk.CTkFrame):
 
         header = ctk.CTkFrame(card, fg_color="transparent")
         header.pack(fill="x", padx=18, pady=(14, 0))
-        self.prev_button = self._nav(header, "‹", -1)
+        self.prev_button = self._nav(header, "prev", -1)
         self.year_label = ctk.CTkLabel(header, text="", text_color=INK, font=self.fonts["title"],
                                        width=90)
         self.year_label.pack(side="left")
-        self.next_button = self._nav(header, "›", 1)
-        self.total_label = ctk.CTkLabel(header, text="", text_color=MUTED, font=self.fonts["body"])
-        self.total_label.pack(side="right", padx=(0, 8))
+        self.next_button = self._nav(header, "next", 1)
         ctk.CTkButton(
-            header, text="×", width=28, height=28, corner_radius=8, font=self.fonts["icon"],
+            header, text="", image=icon("close", MUTED, 14), width=28, height=28, corner_radius=8,
             fg_color="transparent", text_color=MUTED, hover_color=TRACK,
             command=self.hide).pack(side="right")
+        self.total_label = ctk.CTkLabel(header, text="", text_color=MUTED, font=self.fonts["body"])
+        self.total_label.pack(side="right", padx=(0, 8))
 
         self.heat = tk.Canvas(card, width=LEFT + 53 * STEP, height=TOP + 7 * STEP,
                               bg=PANEL, highlightthickness=0)
@@ -87,9 +88,9 @@ class StatsPanel(ctk.CTkFrame):
     def visible(self) -> bool:
         return bool(self.winfo_manager())
 
-    def _nav(self, master: tk.Misc, text: str, step: int) -> ctk.CTkButton:
+    def _nav(self, master: tk.Misc, name: str, step: int) -> ctk.CTkButton:
         button = ctk.CTkButton(
-            master, text=text, width=28, height=28, corner_radius=8, font=self.fonts["icon"],
+            master, text="", image=icon(name, MUTED, 16), width=28, height=28, corner_radius=8,
             fg_color="transparent", text_color=MUTED, hover_color=TRACK,
             command=lambda: self.set_year(self.year + step))
         button.pack(side="left")
@@ -105,8 +106,10 @@ class StatsPanel(ctk.CTkFrame):
         first, last = stats.years_available(history)
         self.year = min(max(self.year, first), last)
         self.year_label.configure(text=str(self.year))
-        self.prev_button.configure(state="normal" if self.year > first else "disabled")
-        self.next_button.configure(state="normal" if self.year < last else "disabled")
+        for button, name, enabled in ((self.prev_button, "prev", self.year > first),
+                                      (self.next_button, "next", self.year < last)):
+            button.configure(state="normal" if enabled else "disabled",
+                             image=icon(name, MUTED if enabled else LINE, 16))
         total = stats.year_total(history, self.year)
         self.total_label.configure(text=f"{stats.fmt_duration(total)} studied in {self.year}")
         current, longest = stats.streaks(history)

@@ -102,3 +102,20 @@ def test_hostile_payload_is_clamped():
     assert len(data.boards[0].tasks) == MAX_TASKS_PER_BOARD
     assert len(data.boards[0].name) <= 24 and len(data.boards[0].tasks[0].title) <= 200
     assert data.history == {"2026-01-01": SECONDS_PER_DAY}
+
+
+def test_goals_roundtrip_and_merge():
+    from hajime.models import Goal
+
+    local = storage.AppData(goals=[Goal("Run a marathon", 2026, True)])
+    remote = storage.AppData(goals=[Goal("Run a marathon", 2026), Goal("Learn Go", 2027)])
+    assert storage.from_payload(storage.to_payload(local)).goals == local.goals
+    merged = storage.merge_unsynced(local, remote)
+    assert [(g.title, g.year, g.done) for g in merged.goals] == [
+        ("Run a marathon", 2026, True), ("Learn Go", 2027, False)]
+
+
+def test_goals_parse_drops_invalid():
+    data = storage.from_payload({"goals": [{"title": "ok", "year": 2026}, {"title": "", "year": 2026},
+                                            {"title": "x", "year": "abc"}, {"title": "y", "year": 1}]})
+    assert [g.title for g in data.goals] == ["ok"]
