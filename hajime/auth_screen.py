@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import customtkinter as ctk
 
-from .config import ACCENT, BG, INK, LINE, MUTED, PANEL, TRACK
+from .config import BG, ERROR, INK, LINE, MUTED, PANEL, TRACK
 
 
 class AuthScreen(ctk.CTkFrame):
@@ -52,7 +52,7 @@ class AuthScreen(ctk.CTkFrame):
         """Ready for input; ``configured=False`` explains how to set Supabase up."""
         self.cancel.pack_forget()
         self.google.configure(state="normal" if configured else "disabled")
-        self.status.configure(text=message, text_color=ACCENT if error else MUTED)
+        self.status.configure(text=message, text_color=ERROR if error else MUTED)
         if configured:
             self.hint.pack(pady=(4, 0))
             self.offline.pack_forget()

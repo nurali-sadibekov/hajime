@@ -12,7 +12,7 @@ from typing import Protocol
 
 import customtkinter as ctk
 
-from .config import ACCENT, FAINT, HOVER_ROW, INK, LINE, PANEL
+from .config import ACCENT, FAINT, HOVER_ROW, INK, LINE, ON_ACCENT, PANEL
 from .icons import icon
 
 
@@ -76,7 +76,7 @@ class RowList:
         row.box = ctk.CTkCheckBox(
             frame, text="", width=22, checkbox_width=20, checkbox_height=20, corner_radius=6,
             border_width=2, fg_color=ACCENT, hover_color=ACCENT, border_color="#BDBCB5",
-            checkmark_color="white",
+            checkmark_color=ON_ACCENT,
             command=lambda: frame.after_idle(self.on_toggle, row.index))
         row.box.pack(side="left", padx=(8, 2), pady=7)
 
@@ -101,7 +101,7 @@ class RowList:
         remove = ctk.CTkLabel(frame, text="", image=icon("close", FAINT, 12), width=26,
                               height=26, cursor="hand2")
         remove.pack(side="right", padx=(0, 4))
-        remove.bind("<Enter>", lambda _e: remove.configure(image=icon("close", ACCENT, 12)))
+        remove.bind("<Enter>", lambda _e: remove.configure(image=icon("close", INK, 12)))
         remove.bind("<Leave>", lambda _e: remove.configure(image=icon("close", FAINT, 12)))
         remove.bind("<Button-1>", lambda _e: frame.after_idle(self.on_delete, row.index))
         return row

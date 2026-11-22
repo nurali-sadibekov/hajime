@@ -21,10 +21,12 @@ from .config import (
     ACCENT,
     ACCENT_BREAK,
     ACCENT_HOVER,
+    ACCENT_TEXT,
     ACTIVE_BG,
     BELTS,
     BG,
     BREAK_SECONDS,
+    ERROR,
     FAINT,
     INK,
     INK_HOVER,
@@ -34,6 +36,7 @@ from .config import (
     MAX_TASK_TITLE,
     MAX_TASKS_PER_BOARD,
     MUTED,
+    ON_ACCENT,
     PANEL,
     SAVE_INTERVAL_SECONDS,
     TRACK,
@@ -209,7 +212,7 @@ class HajimeApp(ctk.CTk):
         self.percent_label.pack(anchor="w", padx=18, pady=(0, 0))
         goal_row = ctk.CTkFrame(card, fg_color="transparent")
         goal_row.pack(fill="x", padx=18, pady=(0, 10))
-        self.goal_label = ctk.CTkLabel(goal_row, text="", text_color=ACCENT, font=f["small"])
+        self.goal_label = ctk.CTkLabel(goal_row, text="", text_color=ACCENT_TEXT, font=f["small"])
         self.goal_label.pack(side="left")
         self.goal_canvas = tk.Canvas(goal_row, width=60, height=23, bg=PANEL,
                                      highlightthickness=0)
@@ -223,7 +226,7 @@ class HajimeApp(ctk.CTk):
         self.entry.pack(side="left", fill="x", expand=True, padx=(8, 4), pady=3)
         self.entry.bind("<Return>", lambda _e: self.add_task())
         ctk.CTkButton(
-            add, text="", image=icon("plus", "#FFFFFF", 16), width=32, height=32,
+            add, text="", image=icon("plus", ON_ACCENT, 16), width=32, height=32,
             corner_radius=9, fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.add_task,
         ).pack(side="right", padx=(0, 6))
 
@@ -275,7 +278,7 @@ class HajimeApp(ctk.CTk):
         for index, button in self._board_buttons:
             current = index == self.data.active
             button.configure(fg_color=ACTIVE_BG if current else "transparent",
-                             text_color=ACCENT if current else INK,
+                             text_color=INK,
                              hover_color=ACTIVE_BG if current else TRACK)
 
     def select_board(self, index: int) -> None:
@@ -516,11 +519,11 @@ class HajimeApp(ctk.CTk):
             self.mini.hide()
         else:
             self.mini.show()
-            self.float_button.configure(text_color=ACCENT)
+            self.float_button.configure(image=icon("pip", INK, 16))
             self._draw_timer()
 
     def on_mini_hidden(self) -> None:
-        self.float_button.configure(text_color=MUTED)
+        self.float_button.configure(image=icon("pip", MUTED, 16))
 
     def _draw_timer(self) -> None:
         minutes, seconds = divmod(self.timer.remaining, 60)
@@ -759,7 +762,7 @@ class HajimeApp(ctk.CTk):
         short = email if len(email) <= 17 else email[:16] + "…"
         self.account_label.configure(
             text=short if self.sync_online else "Offline · will retry",
-            text_color=MUTED if self.sync_online else ACCENT)
+            text_color=MUTED if self.sync_online else ERROR)
         self.account_button.configure(text="Sign out")
 
     def _poll_events(self) -> None:
