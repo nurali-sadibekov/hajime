@@ -17,7 +17,7 @@ class AuthScreen(ctk.CTkFrame):
         box.place(relx=0.5, rely=0.46, anchor="center")
 
         ctk.CTkLabel(box, text="Hajime", text_color=INK,
-                     font=ctk.CTkFont(fonts["title"].cget("family"), 34, "bold")).pack()
+                     font=fonts["title"]).pack()
         ctk.CTkLabel(box, text="Your tasks and belts, on every device.", text_color=MUTED,
                      font=fonts["body"]).pack(pady=(4, 28))
 

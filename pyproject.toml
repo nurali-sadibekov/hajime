@@ -38,7 +38,7 @@ include-package-data = false
 version = { attr = "hajime.__version__" }
 
 [tool.setuptools.package-data]
-hajime = ["assets/belts/*.svg"]
+hajime = ["assets/belts/*.svg", "assets/fonts/*"]
 
 [tool.ruff]
 line-length = 100

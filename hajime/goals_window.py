@@ -74,7 +74,8 @@ class GoalsPanel(ctk.CTkFrame):
         self.entry.bind("<Return>", lambda _e: self.add_goal())
         ctk.CTkButton(
             add, text="Add", width=64, height=34, corner_radius=9, font=self.fonts["button"],
-            fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.add_goal).pack(
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="#FFFFFF",
+            command=self.add_goal).pack(
             side="left", padx=(8, 0))
 
         self.list = ctk.CTkScrollableFrame(

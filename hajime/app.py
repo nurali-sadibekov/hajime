@@ -10,7 +10,6 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import font as tkfont
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -27,7 +26,6 @@ from .config import (
     BG,
     BREAK_SECONDS,
     FAINT,
-    FONT_CANDIDATES,
     INK,
     INK_HOVER,
     LINE,
@@ -41,6 +39,7 @@ from .config import (
     TRACK,
     WORK_SECONDS,
 )
+from .fonts import build_fonts
 from .goals_window import GoalsPanel
 from .icons import icon
 from .mini_timer import MiniTimer
@@ -56,12 +55,6 @@ LOG = logging.getLogger("hajime")
 DRAG_THRESHOLD_PX = 6
 MODE_LABELS = {WORK: "Work", BREAK: "Break"}
 NEW_BOARD = -1  # sentinel for "the new-board name field is open"
-
-
-def _pick_font_family(root: tk.Misc) -> str:
-    available = set(tkfont.families(root))
-    return next((f for f in FONT_CANDIDATES if f in available),
-                tkfont.nametofont("TkDefaultFont").actual("family"))
 
 
 def _card(master: tk.Misc, **pack) -> ctk.CTkFrame:
@@ -108,18 +101,8 @@ class HajimeApp(ctk.CTk):
         self.title("Hajime")
         self.geometry(f"{WINDOW_SIZE[0]}x{WINDOW_SIZE[1]}")
         self.resizable(False, False)
-        family = _pick_font_family(self)
-        self.fonts = {
-            "brand": ctk.CTkFont(family, 18, "bold"),
-            "title": ctk.CTkFont(family, 22, "bold"),
-            "body": ctk.CTkFont(family, 13),
-            "done": ctk.CTkFont(family, 13, overstrike=True),
-            "small": ctk.CTkFont(family, 11),
-            "clock": ctk.CTkFont(family, 28, "bold"),
-            "button": ctk.CTkFont(family, 12, "bold"),
-            "icon": ctk.CTkFont(family, 17),
-        }
-        self.board_menu = tk.Menu(self, tearoff=0)
+        self.fonts = build_fonts(self)
+        self.board_menu = tk.Menu(self, tearoff=0, font=self.fonts["small"])
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.refresh_boards()
@@ -146,8 +129,6 @@ class HajimeApp(ctk.CTk):
         # Sidebar: brand, boards, timer
         brand = ctk.CTkFrame(side, fg_color="transparent")
         brand.pack(fill="x", pady=(0, 8))
-        ctk.CTkLabel(brand, text="Hajime", text_color=INK, font=f["brand"]).pack(
-            side="left", padx=6)
         ctk.CTkButton(
             brand, text="", image=icon("activity", MUTED, 16), width=30, height=30,
             corner_radius=8,
@@ -176,7 +157,7 @@ class HajimeApp(ctk.CTk):
             selected_hover_color=PANEL, unselected_color=TRACK, unselected_hover_color=LINE,
             text_color=INK)
         self.mode_switch.pack(fill="x", padx=12, pady=(12, 0))
-        self.clock_label = ctk.CTkLabel(timer, text="", text_color=INK, font=f["clock"])
+        self.clock_label = ctk.CTkLabel(timer, text="", text_color=INK, font=f["title"])
         self.clock_label.pack(pady=(4, 0))
         buttons = ctk.CTkFrame(timer, fg_color="transparent")
         buttons.pack(padx=12, pady=(2, 0))

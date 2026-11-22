@@ -116,6 +116,11 @@ def test_goals_roundtrip_and_merge():
 
 
 def test_goals_parse_drops_invalid():
-    data = storage.from_payload({"goals": [{"title": "ok", "year": 2026}, {"title": "", "year": 2026},
-                                            {"title": "x", "year": "abc"}, {"title": "y", "year": 1}]})
+    goals = [
+        {"title": "ok", "year": 2026},
+        {"title": "", "year": 2026},
+        {"title": "x", "year": "abc"},
+        {"title": "y", "year": 1},
+    ]
+    data = storage.from_payload({"goals": goals})
     assert [g.title for g in data.goals] == ["ok"]

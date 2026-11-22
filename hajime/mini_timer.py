@@ -21,7 +21,7 @@ class MiniTimer(ctk.CTkToplevel):
         frame = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=0, border_width=1,
                              border_color=LINE)
         frame.pack(fill="both", expand=True)
-        self.clock = ctk.CTkLabel(frame, text="", text_color=INK, font=app.fonts["clock"])
+        self.clock = ctk.CTkLabel(frame, text="", text_color=INK, font=app.fonts["title"])
         self.clock.pack(side="left", padx=(14, 8), pady=8)
         self.button = ctk.CTkButton(
             frame, text="Start", width=64, height=30, corner_radius=8,
